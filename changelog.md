@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.2.0
+
+### Added
+
+- Backup Pro identity and coexistence with standard Backup.
+- Measured backup plans with group totals and largest included directories.
+- Opt-in, measured exclusions for confirmed TMDb Helper generated-image caches.
+
+### Changed
+
+- Replaced raw prefix exclusions with normalized component-aware path matching.
+- Removed case-only duplicate translation paths that cannot coexist on macOS.
+
 ## [Version 1.7.3](https://github.com/robweber/xbmcbackup/compare/matrix-1.7.1...robweber:matrix-1.7.3)
 
 ### Fixed

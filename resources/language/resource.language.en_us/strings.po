@@ -658,3 +658,11 @@ msgstr ""
 #~ msgctxt "#30058"
 #~ msgid "Dropbox Developer Code Needed"
 #~ msgstr "Dropbox Developer Code Needed"
+
+msgctxt "#30164"
+msgid "Exclude TMDb Helper generated image cache"
+msgstr "Exclude TMDb Helper generated image cache"
+
+msgctxt "#30165"
+msgid "Omits regenerable blur, crop, desaturate and color cache folders; settings, players and databases remain included"
+msgstr "Omits regenerable blur, crop, desaturate and color cache folders; settings, players and databases remain included"

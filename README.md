@@ -11,9 +11,9 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.1.0 establishes the independent identity and design baseline. Cache
-exclusions, Arctic Fuse 3 restore integration, archive hardening and the final
-artwork are planned work and are not yet implemented. See
+Version 0.2.0 establishes the independent identity and adds measured backup
+planning with opt-in TMDb Helper generated-image exclusions. Arctic Fuse 3
+restore integration, archive hardening and the final artwork remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
 
 ## Attribution

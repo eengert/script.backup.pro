@@ -202,6 +202,14 @@
           </dependencies>
           <control type="toggle" />
         </setting>
+        <setting id="exclude_tmdbh_image_cache" type="boolean" label="30164" help="30165">
+          <level>0</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" setting="backup_addon_data">true</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="backup_config" type="boolean" label="30035" help="">
           <level>0</level>
           <default>true</default>

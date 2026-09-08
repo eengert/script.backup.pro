@@ -1,6 +1,6 @@
 # Backup Pro design baseline
 
-Status: accepted foundation scope, implementation pending
+Status: foundation and planning engine complete; archive implementation pending
 
 ## Product identity and boundaries
 
@@ -117,8 +117,8 @@ live-file copy without preflight and recovery planning.
 
 ## Phased implementation and checkpoints
 
-1. **Foundation**: fork, independent identity, design record, clean validation.
-2. **Planning engine**: pure path model, size preflight, normalized exclusions,
+1. **Foundation (complete)**: fork, independent identity, design record, clean validation.
+2. **Planning engine (complete)**: pure path model, size preflight, normalized exclusions,
    TMDb Helper adapter and unit tests.
 3. **Archive format**: versioned manifest, checksums, bounded validation and
    compatibility handling for Backup Pro archives.

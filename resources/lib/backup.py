@@ -3,6 +3,7 @@ import time
 import json
 import xbmc
 import xbmcgui
+import xbmcaddon
 import xbmcvfs
 import os.path
 from . import utils as utils
@@ -11,6 +12,12 @@ from . vfs import XBMCFileSystem, DropboxFileSystem, ZipFileSystem
 from . progressbar import BackupProgressBar
 from resources.lib.guisettings import GuiSettingsManager
 from resources.lib.extractor import ZipExtractor
+from resources.lib.planning import (
+    FilePlanner,
+    TMDB_HELPER_ID,
+    summarize_file_groups,
+    tmdb_helper_cache_exclusions,
+)
 
 
 def folderSort(aKey):
@@ -51,6 +58,10 @@ class XbmcBackup:
     def __init__(self):
         self.xbmc_vfs = XBMCFileSystem(xbmcvfs.translatePath('special://home'))
         self.ZIP_TEMP_PATH = xbmcvfs.translatePath(utils.getSetting('zip_temp_path'))
+        self.transferSize = 0
+        self.transferLeft = 0
+        self.backup_plan = None
+        self._automatic_exclusion_rules = None
 
         self.configureRemote()
         utils.log(utils.getString(30046))
@@ -125,32 +136,7 @@ class XbmcBackup:
 
             utils.log(utils.getString(30051))
             utils.log('File Selection Type: ' + str(utils.getSetting('backup_selection_type')))
-            allFiles = []
-
-            if(utils.getSettingInt('backup_selection_type') == 0):
-                # read in a list of the directories to backup
-                selectedDirs = self._readBackupConfig(utils.addon_dir() + "/resources/data/default_files.json")
-
-                # simple mode - get file listings for all enabled directories
-                for aDir in self.simple_directory_list:
-                    # if this dir enabled
-                    if(utils.getSettingBool('backup_' + aDir)):
-                        # get a file listing and append it to the allfiles array
-                        allFiles.append(self._addBackupDir(aDir, selectedDirs[aDir]['root'], selectedDirs[aDir]['dirs']))
-            else:
-                # advanced mode - load custom paths
-                selectedDirs = self._readBackupConfig(utils.data_dir() + "/custom_paths.json")
-
-                # get the set names
-                keys = list(selectedDirs.keys())
-
-                # go through the custom sets
-                for aKey in keys:
-                    # get the set
-                    aSet = selectedDirs[aKey]
-
-                    # get file listing and append
-                    allFiles.append(self._addBackupDir(aKey, aSet['root'], aSet['dirs']))
+            allFiles = self._collectBackupFiles()
 
             # create a validation file for backup rotation
             writeCheck = self._createValidationFile(allFiles)
@@ -458,14 +444,75 @@ class XbmcBackup:
         self.xbmc_vfs.set_root(xbmcvfs.translatePath(root_path))
         for aDir in dirList:
             fileManager.addDir(aDir)
+        for exclusion in self._automaticExclusions():
+            fileManager.addDir(exclusion)
 
         # walk all the root trees
         fileManager.walk()
 
-        # update total size
+        summary = fileManager.summary()
         self.transferSize = self.transferSize + fileManager.fileSize()
+        files = fileManager.getFiles()
 
-        return {"name": folder_name, "source": root_path, "dest": self.remote_vfs.root_path, "files": fileManager.getFiles()}
+        return {
+            "name": folder_name,
+            "source": root_path,
+            "plan_root": xbmcvfs.translatePath(root_path),
+            "dest": self.remote_vfs.root_path,
+            "files": files,
+            "summary": summary,
+        }
+
+    def _collectBackupFiles(self):
+        allFiles = []
+        self.transferSize = 0
+
+        if(utils.getSettingInt('backup_selection_type') == 0):
+            selectedDirs = self._readBackupConfig(
+                utils.addon_dir() + "/resources/data/default_files.json")
+            for name in self.simple_directory_list:
+                if(utils.getSettingBool('backup_' + name)):
+                    selected = selectedDirs[name]
+                    allFiles.append(self._addBackupDir(
+                        name, selected['root'], selected['dirs']))
+        else:
+            selectedDirs = self._readBackupConfig(
+                utils.data_dir() + "/custom_paths.json")
+            for name in sorted(selectedDirs):
+                selected = selectedDirs[name]
+                allFiles.append(self._addBackupDir(
+                    name, selected['root'], selected['dirs']))
+
+        self.backup_plan = summarize_file_groups(allFiles)
+        utils.log('Backup plan: %s' % json.dumps(
+            self.backup_plan, sort_keys=True))
+        return allFiles
+
+    def _automaticExclusions(self):
+        if self._automatic_exclusion_rules is not None:
+            return self._automatic_exclusion_rules
+
+        self._automatic_exclusion_rules = []
+        if not utils.getSettingBool('exclude_tmdbh_image_cache'):
+            return self._automatic_exclusion_rules
+
+        try:
+            addon = xbmcaddon.Addon(TMDB_HELPER_ID)
+            try:
+                configured = addon.getSettingString('image_location').strip()
+            except AttributeError:
+                configured = addon.getSetting('image_location').strip()
+        except Exception as error:
+            utils.log('TMDb Helper cache adapter unavailable: %s' % error,
+                      xbmc.LOGWARNING)
+            return self._automatic_exclusion_rules
+
+        location = configured or (
+            'special://profile/addon_data/%s' % TMDB_HELPER_ID)
+        translated = xbmcvfs.translatePath(location)
+        self._automatic_exclusion_rules = tmdb_helper_cache_exclusions(
+            translated)
+        return self._automatic_exclusion_rules
 
     def _dateFormat(self, dirName):
         # create date_time object from foldername YYYYMMDDHHmm
@@ -576,98 +623,17 @@ class XbmcBackup:
         return json.loads(jsonString)
 
 
-class FileManager:
-    not_dir = ['.zip', '.xsp', '.rar']
-    exclude_dir = []
-    root_dirs = []
-    pathSep = '/'
-    totalSize = 1
-
+class FileManager(FilePlanner):
     def __init__(self, vfs):
-        self.vfs = vfs
-        self.fileArray = []
-        self.exclude_dir = []
-        self.root_dirs = []
-
-    def walk(self):
-
-        for aDir in self.root_dirs:
-            self.addFile(xbmcvfs.translatePath(aDir['path']), True)
-            self.walkTree(xbmcvfs.translatePath(aDir['path']), aDir['recurse'])
-
-    def walkTree(self, directory, recurse=True):
-        if(utils.getSettingBool('verbose_logging')):
-            utils.log('walking ' + directory + ', recurse: ' + str(recurse))
-
-        if(directory[-1:] == '/' or directory[-1:] == '\\'):
-            directory = directory[:-1]
-
-        if(self.vfs.exists(directory + self.pathSep)):
-            dirs, files = self.vfs.listdir(directory)
-
-            if(recurse):
-                # create all the subdirs first
-                for aDir in dirs:
-                    dirPath = xbmcvfs.validatePath(xbmcvfs.translatePath(directory + self.pathSep + aDir))
-                    file_ext = aDir.split('.')[-1]
-
-                    # check if directory is excluded
-                    if(not any(dirPath.startswith(exDir) for exDir in self.exclude_dir)):
-
-                        self.addFile(dirPath, True)
-
-                        # catch for "non directory" type files
-                        shouldWalk = True
-
-                        for s in file_ext:
-                            if(s in self.not_dir):
-                                shouldWalk = False
-
-                        if(shouldWalk):
-                            self.walkTree(dirPath)
-
-            # copy all the files
-            for aFile in files:
-                filePath = xbmcvfs.translatePath(directory + self.pathSep + aFile)
-                self.addFile(filePath)
-
-    def addDir(self, dirMeta):
-        if(dirMeta['type'] == 'include'):
-            self.root_dirs.append({'path': dirMeta['path'], 'recurse': dirMeta['recurse']})
-        else:
-            self.excludeFile(xbmcvfs.translatePath(dirMeta['path']))
-
-    def addFile(self, filename, is_dir = False):
-        # write the full remote path name of this file
-        if(utils.getSettingBool('verbose_logging')):
-            utils.log("Add File: " + filename)
-
-        # get the file size
-        fSize = self.vfs.fileSize(filename)
-        self.totalSize = self.totalSize + fSize
-
-        self.fileArray.append({'file': filename, 'size': fSize, 'is_dir': is_dir})
-
-    def excludeFile(self, filename):
-        # remove trailing slash
-        if(filename[-1] == '/' or filename[-1] == '\\'):
-            filename = filename[:-1]
-
-        # write the full remote path name of this file
-        utils.log("Exclude File: " + filename)
-        self.exclude_dir.append(filename)
-
-    def getFiles(self):
-        result = self.fileArray
-        self.fileArray = []
-        self.root_dirs = []
-        self.exclude_dir = []
-        self.totalSize = 0
-
-        return result
-
-    def totalFiles(self):
-        return len(self.fileArray)
+        FilePlanner.__init__(
+            self,
+            vfs,
+            translate=xbmcvfs.translatePath,
+            validate=xbmcvfs.validatePath,
+            logger=utils.log,
+            verbose=utils.getSettingBool('verbose_logging'),
+        )
 
     def fileSize(self):
-        return self.totalSize
+        # Preserve upstream's non-zero progress denominator for empty sets.
+        return max(1.0, FilePlanner.fileSize(self))
