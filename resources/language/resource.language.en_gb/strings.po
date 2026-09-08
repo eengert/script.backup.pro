@@ -26,7 +26,7 @@ msgid "Ever hosed your Kodi configuration and wished you'd had a backup? Now you
 msgstr ""
 
 msgctxt "#30010"
-msgid "Backup"
+msgid "Backup Pro"
 msgstr ""
 
 msgctxt "#30011"

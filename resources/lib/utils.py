@@ -3,7 +3,7 @@ import xbmcgui
 import xbmcaddon
 import xbmcvfs
 
-__addon_id__ = 'script.xbmcbackup'
+__addon_id__ = 'script.backup.pro'
 __Addon = xbmcaddon.Addon(__addon_id__)
 
 
