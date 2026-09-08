@@ -1,6 +1,6 @@
 # Backup Pro design baseline
 
-Status: foundation and planning engine complete; archive implementation pending
+Status: archive contract and extraction preflight complete; payload read-back pending
 
 ## Product identity and boundaries
 
@@ -120,8 +120,10 @@ live-file copy without preflight and recovery planning.
 1. **Foundation (complete)**: fork, independent identity, design record, clean validation.
 2. **Planning engine (complete)**: pure path model, size preflight, normalized exclusions,
    TMDb Helper adapter and unit tests.
-3. **Archive format**: versioned manifest, checksums, bounded validation and
-   compatibility handling for Backup Pro archives.
+3. **Archive format (in progress)**: versioned manifest, checksums, bounded
+   validation and compatibility handling for Backup Pro archives. The manifest
+   contract and pre-extraction ZIP gate are complete; streamed payload
+   verification and verified publication remain.
 4. **AF3 adapter**: live capture, managed helper files and isolated tests using
    Skin Settings Backup fixtures and behavior.
 5. **Transactional restore**: rollback, pending recovery, VFS staging, AF3

@@ -1,4 +1,10 @@
 from . import utils as utils
+from .archive import (
+    find_manifest_member,
+    load_manifest,
+    validate_archive_members,
+    verify_archive_payload,
+)
 
 
 class ZipExtractor:
@@ -11,12 +17,25 @@ class ZipExtractor:
         # update the progress bar
         progressBar.updateProgress(0, utils.getString(30100))
 
-        # list the files
-        fileCount = float(len(zipFile.listFiles()))
+        # Validate the complete central directory before materializing anything.
+        files = zipFile.listFiles()
+        try:
+            validate_archive_members(files)
+            manifest_member, _root = find_manifest_member(files)
+            manifest_data = zipFile.readFile(manifest_member)
+            if isinstance(manifest_data, bytes):
+                manifest_data = manifest_data.decode('utf-8')
+            manifest = load_manifest(manifest_data)
+            verify_archive_payload(files, manifest, zipFile.openFile)
+        except Exception as error:
+            utils.log("Unsafe archive rejected: %s" % error)
+            return False
+
+        fileCount = float(len(files))
         currentFile = 0
 
         try:
-            for aFile in zipFile.listFiles():
+            for aFile in files:
                 # update the progress bar
                 currentFile += 1
                 progressBar.updateProgress(int((currentFile / fileCount) * 100), utils.getString(30100))

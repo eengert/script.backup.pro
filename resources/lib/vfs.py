@@ -106,12 +106,18 @@ class ZipFileSystem(Vfs):
         return False
 
     def put(self, source, dest):
-
-        aFile = xbmcvfs.File(xbmcvfs.translatePath(source), 'r')
-
-        self.zip.writestr(dest, aFile.readBytes())
-
-        return True
+        try:
+            with xbmcvfs.File(xbmcvfs.translatePath(source), 'r') as aFile:
+                with self.zip.open(dest, 'w', force_zip64=True) as member:
+                    while True:
+                        chunk = aFile.readBytes(1024 * 1024)
+                        if not chunk:
+                            break
+                        member.write(chunk)
+            return True
+        except Exception as error:
+            utils.log("Unable to write ZIP member %s: %s" % (dest, error))
+            return False
 
     def rmdir(self, directory):
         return False
@@ -125,6 +131,12 @@ class ZipFileSystem(Vfs):
     def extract(self, aFile, path):
         # extract zip file to path
         self.zip.extract(aFile, path)
+
+    def readFile(self, aFile):
+        return self.zip.read(aFile)
+
+    def openFile(self, aFile):
+        return self.zip.open(aFile, 'r')
 
     def listFiles(self):
         return self.zip.infolist()

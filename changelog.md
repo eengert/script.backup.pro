@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.3.0
+
+### Added
+
+- Versioned Backup Pro manifests with normalized file paths, exact byte sizes
+  and SHA-256 checksums.
+- ZIP preflight for duplicate paths, traversal, absolute paths, symlinks,
+  unsupported entries and explicit size, count and compression-ratio limits.
+
+### Changed
+
+- ZIP members are written in bounded chunks instead of loading each source
+  file wholly into memory.
+- Backup Pro ZIP restores require a matching Backup Pro manifest and do not
+  accept undeclared payload members.
+
 ## Version 0.2.0
 
 ### Added

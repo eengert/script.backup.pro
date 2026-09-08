@@ -12,6 +12,13 @@ from . vfs import XBMCFileSystem, DropboxFileSystem, ZipFileSystem
 from . progressbar import BackupProgressBar
 from resources.lib.guisettings import GuiSettingsManager
 from resources.lib.extractor import ZipExtractor
+from resources.lib.archive import (
+    MANIFEST_NAME,
+    ArchiveValidationError,
+    build_manifest,
+    load_manifest,
+    sha256_reader,
+)
 from resources.lib.planning import (
     FilePlanner,
     TMDB_HELPER_ID,
@@ -93,7 +100,8 @@ class XbmcBackup:
         dirs, files = self.remote_vfs.listdir(self.remote_base_path)
 
         for aDir in dirs:
-            if(self.remote_vfs.exists(self.remote_base_path + aDir + "/xbmcbackup.val")):
+            if(self.remote_vfs.exists(
+                    self.remote_base_path + aDir + "/" + MANIFEST_NAME)):
 
                 # format the name according to regional settings
                 folderName = self._dateFormat(aDir)
@@ -551,30 +559,33 @@ class XbmcBackup:
                     remove_num = remove_num + 1
 
     def _createValidationFile(self, dirList):
-        valInfo = {"name": "XBMC Backup Validation File", "xbmc_version": xbmc.getInfoLabel('System.BuildVersion'), "type": 0, "system_settings": [], "addons": []}
-        valDirs = []
-
-        # save list of file sets
-        for aDir in dirList:
-            valDirs.append({"name": aDir['name'], "path": aDir['source']})
-        valInfo['directories'] = valDirs
-
-        # dump all current Kodi settings
         gui_settings = GuiSettingsManager()
-        valInfo['system_settings'] = gui_settings.backup()
+        valInfo = build_manifest(dirList, self._hashFile, {
+            "name": "Backup Pro Manifest",
+            "created_utc": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "addon_id": utils.__addon_id__,
+            "addon_version": xbmcaddon.Addon(
+                utils.__addon_id__).getAddonInfo('version'),
+            "kodi_version": xbmc.getInfoLabel('System.BuildVersion'),
+            "type": 0,
+            "system_settings": gui_settings.backup(),
+            "addons": gui_settings.list_addons(),
+            "plan": self.backup_plan,
+        })
 
-        # save all currently installed addons
-        valInfo['addons'] = gui_settings.list_addons()
-
-        vFile = xbmcvfs.File(xbmcvfs.translatePath(utils.data_dir() + "xbmcbackup.val"), 'w')
-        vFile.write(json.dumps(valInfo))
+        local_manifest = xbmcvfs.translatePath(
+            utils.data_dir() + MANIFEST_NAME)
+        vFile = xbmcvfs.File(local_manifest, 'w')
+        vFile.write(json.dumps(valInfo, sort_keys=True, separators=(',', ':')))
         vFile.write("")
         vFile.close()
 
-        success = self._copyFile(self.xbmc_vfs, self.remote_vfs, xbmcvfs.translatePath(utils.data_dir() + "xbmcbackup.val"), self.remote_vfs.root_path + "xbmcbackup.val")
+        success = self._copyFile(
+            self.xbmc_vfs, self.remote_vfs, local_manifest,
+            self.remote_vfs.root_path + MANIFEST_NAME)
 
         # remove the validation file
-        xbmcvfs.delete(xbmcvfs.translatePath(utils.data_dir() + "xbmcbackup.val"))
+        xbmcvfs.delete(local_manifest)
 
         if(success):
             # android requires a .nomedia file to not index the directory as media
@@ -588,30 +599,46 @@ class XbmcBackup:
 
     def _checkValidationFile(self, path):
         result = None
-
-        # copy the file and open it
-        self._copyFile(self.remote_vfs, self.xbmc_vfs, path + "xbmcbackup.val", xbmcvfs.translatePath(utils.data_dir() + "xbmcbackup_restore.val"))
-
-        with xbmcvfs.File(xbmcvfs.translatePath(utils.data_dir() + "xbmcbackup_restore.val"), 'r') as vFile:
-            jsonString = vFile.read()
-
-        # delete after checking
-        xbmcvfs.delete(xbmcvfs.translatePath(utils.data_dir() + "xbmcbackup_restore.val"))
+        restore_manifest = xbmcvfs.translatePath(
+            utils.data_dir() + "backup-pro.restore-manifest.json")
 
         try:
-            result = json.loads(jsonString)
+            copied = self._copyFile(
+                self.remote_vfs, self.xbmc_vfs, path + MANIFEST_NAME,
+                restore_manifest)
+            if not copied:
+                utils.log('Backup Pro manifest could not be read',
+                          xbmc.LOGWARNING)
+                return None
+            with xbmcvfs.File(restore_manifest, 'r') as vFile:
+                jsonString = vFile.read()
+        except Exception as error:
+            utils.log('Backup Pro manifest read failed: %s' % error,
+                      xbmc.LOGWARNING)
+            return None
+        finally:
+            if xbmcvfs.exists(restore_manifest):
+                xbmcvfs.delete(restore_manifest)
 
-            if(xbmc.getInfoLabel('System.BuildVersion') != result['xbmc_version']):
+        try:
+            result = load_manifest(jsonString)
+
+            if(xbmc.getInfoLabel('System.BuildVersion') != result['kodi_version']):
                 shouldContinue = xbmcgui.Dialog().yesno(utils.getString(30085), "%s\n%s" % (utils.getString(30086), utils.getString(30044)))
 
                 if(not shouldContinue):
                     result = None
 
-        except ValueError:
-            # may fail on older archives
+        except (ArchiveValidationError, KeyError) as error:
+            utils.log('Backup Pro manifest rejected: %s' % error,
+                      xbmc.LOGWARNING)
             result = None
 
         return result
+
+    def _hashFile(self, path):
+        with xbmcvfs.File(xbmcvfs.translatePath(path), 'r') as source:
+            return sha256_reader(source.readBytes)
 
     def _createResumeBackupFile(self):
         with xbmcvfs.File(xbmcvfs.translatePath(utils.data_dir() + "resume.txt"), 'w') as f:

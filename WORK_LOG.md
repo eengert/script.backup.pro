@@ -51,3 +51,22 @@ package was installed and no Kodi profile or Apple TV was changed.
 Validation: 11 planning and Kodi-bridge tests, Python compilation, XML parsing and Git
 whitespace checks passed. The Mac profile scan was read-only. No package was
 installed and no Kodi profile or Apple TV was changed.
+
+## Phase 4A - archive contract and extraction gate
+
+- Replaced the legacy validation marker with a versioned Backup Pro manifest.
+- Records normalized relative file paths, exact byte sizes, SHA-256 hashes,
+  Kodi/add-on versions, settings metadata and the measured backup plan.
+- Added case-collision, duplicate, traversal, absolute-path, backslash,
+  symlink, special-entry, encryption and unsupported-compression rejection.
+- Added explicit file-count, per-member, aggregate-size and compression-ratio
+  ceilings before extraction.
+- Requires compressed archives to contain exactly one root-level Backup Pro
+  manifest and rejects missing, undeclared or size-mismatched members.
+- Streams ZIP writes in 1 MiB chunks instead of reading each source file fully
+  into memory.
+
+Validation: 35 pure, real-ZIP and Kodi-bridge tests, Python compilation, XML parsing and
+Git whitespace checks passed. This phase did not install the add-on or write to
+any Kodi profile or Apple TV. Payload read-back and restore hash verification
+remain Phase 4B work.

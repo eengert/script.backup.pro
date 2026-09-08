@@ -11,9 +11,10 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.2.0 establishes the independent identity and adds measured backup
-planning with opt-in TMDb Helper generated-image exclusions. Arctic Fuse 3
-restore integration, archive hardening and the final artwork remain planned. See
+Version 0.3.0 adds measured backup planning, opt-in TMDb Helper generated-image
+exclusions, a checksummed Backup Pro manifest and bounded ZIP preflight.
+Payload read-back verification, Arctic Fuse 3 restore integration and final
+artwork remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
 
 ## Attribution
