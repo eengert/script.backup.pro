@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.4.0
+
+### Added
+
+- Exact read-back verification for published manifests and folder payloads.
+- Full local ZIP validation plus byte-for-byte verification after upload.
+
+### Changed
+
+- Backup retention runs only after copying and read-back verification succeed.
+- Cancelled or failed backup artifacts are removed so they are not presented as
+  valid restore points.
+- New backups refuse pre-existing targets and clean up their complete fresh
+  artifact after failure.
+- Dropbox uploads close source handles reliably and handle the exact chunk-size
+  boundary as a normal upload.
+
 ## Version 0.3.0
 
 ### Added

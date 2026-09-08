@@ -1,7 +1,10 @@
 from __future__ import unicode_literals
 
 import hashlib
+import json
+import os
 import stat
+import tempfile
 import unittest
 import zipfile
 
@@ -16,6 +19,8 @@ from resources.lib.archive import (
     validate_archive_members,
     validate_archive_layout,
     validate_manifest,
+    verify_manifest_files,
+    verify_zip_archive,
 )
 
 
@@ -222,6 +227,47 @@ class HashTests(unittest.TestCase):
         digest, size = sha256_reader(read_chunk, chunk_size=2)
         self.assertEqual(hashlib.sha256(b'abc').hexdigest(), digest)
         self.assertEqual(3, size)
+
+    def test_hashing_honors_cancellation_between_chunks(self):
+        calls = []
+
+        def cancelled():
+            calls.append(True)
+            return len(calls) > 1
+
+        with self.assertRaises(ArchiveValidationError):
+            sha256_reader(lambda _size: b'x', check_cancel=cancelled)
+
+    def test_folder_payload_verification_detects_same_size_change(self):
+        document = manifest()
+        good = lambda _path: (hashlib.sha256(b'abc').hexdigest(), 3)
+        self.assertEqual(1, verify_manifest_files(
+            document, good)['file_count'])
+        with self.assertRaises(ArchiveValidationError):
+            verify_manifest_files(
+                document,
+                lambda _path: (hashlib.sha256(b'xyz').hexdigest(), 3))
+
+    def test_completed_zip_verification_reads_every_payload(self):
+        payload = b'abc'
+        document = manifest()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'backup.zip')
+            with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    'backup/backup-pro.manifest.json', json.dumps(document))
+                archive.writestr(
+                    'backup/addon_data/example/settings.xml', payload)
+            self.assertEqual(1, verify_zip_archive(path)['file_count'])
+
+            changed = os.path.join(directory, 'changed.zip')
+            with zipfile.ZipFile(changed, 'w', zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    'backup/backup-pro.manifest.json', json.dumps(document))
+                archive.writestr(
+                    'backup/addon_data/example/settings.xml', b'xyz')
+            with self.assertRaises(ArchiveValidationError):
+                verify_zip_archive(changed)
 
 
 if __name__ == '__main__':

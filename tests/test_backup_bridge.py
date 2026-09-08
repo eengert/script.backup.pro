@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 import json
+import hashlib
 import os
 import sys
 import tempfile
@@ -32,7 +33,7 @@ def install_kodi_stubs():
 
         def getAddonInfo(self, name):
             return {'path': '.', 'profile': '/profile/',
-                    'version': '0.2.0'}.get(name, '')
+                    'version': '0.4.0'}.get(name, '')
 
         def getLocalizedString(self, string_id):
             return str(string_id)
@@ -86,7 +87,11 @@ def install_kodi_stubs():
 
 install_kodi_stubs()
 
-from resources.lib.archive import ARCHIVE_ID, ARCHIVE_VERSION  # noqa: E402
+from resources.lib.archive import (  # noqa: E402
+    ARCHIVE_ID,
+    ARCHIVE_VERSION,
+    ArchiveValidationError,
+)
 from resources.lib.backup import FileManager, XbmcBackup  # noqa: E402
 from resources.lib import backup as backup_module  # noqa: E402
 from tests.test_planning import FakeVfs  # noqa: E402
@@ -160,6 +165,132 @@ class BackupBridgeTests(unittest.TestCase):
                     delattr(backup_module.xbmcvfs, name)
                 else:
                     setattr(backup_module.xbmcvfs, name, value)
+
+    def test_folder_readback_verifies_manifest_and_payload(self):
+        payload_hash = hashlib.sha256(b'abc').hexdigest()
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = type('Remote', (), {
+            'clean_path': lambda _self, path: path.rstrip('/') + '/',
+        })()
+        instance.backup_manifest_file_hash = ('manifest-hash', 20)
+        instance.backup_manifest = {
+            'archive_id': ARCHIVE_ID,
+            'archive_version': ARCHIVE_VERSION,
+            'directories': [{
+                'name': 'config',
+                'path': 'special://home/userdata',
+                'files': [{
+                    'path': 'settings.xml',
+                    'size': 3,
+                    'sha256': payload_hash,
+                }],
+            }],
+        }
+        hashes = {
+            '/backup/backup-pro.manifest.json': ('manifest-hash', 20),
+            '/backup/config/settings.xml': (payload_hash, 3),
+        }
+        instance._hashVfsFile = lambda _vfs, path, **_kwargs: hashes[path]
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+        })()
+        self.assertEqual(1, instance._verifyFolderBackup(
+            '/backup')['file_count'])
+
+        hashes['/backup/config/settings.xml'] = (
+            hashlib.sha256(b'xyz').hexdigest(), 3)
+        with self.assertRaises(ArchiveValidationError):
+            instance._verifyFolderBackup('/backup')
+
+    def test_compressed_readback_requires_exact_remote_copy(self):
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = object()
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+        })()
+        instance._hashFile = lambda _path, **_kwargs: ('same', 10)
+        instance._hashVfsFile = lambda _vfs, _path, **_kwargs: ('same', 10)
+        self.assertEqual(10, instance._verifyCompressedUpload(
+            '/local.zip', '/remote.zip')['total_bytes'])
+
+        instance._hashVfsFile = lambda _vfs, _path, **_kwargs: ('changed', 10)
+        with self.assertRaises(ArchiveValidationError):
+            instance._verifyCompressedUpload('/local.zip', '/remote.zip')
+
+    def test_retention_runs_only_after_successful_verification(self):
+        class Remote:
+            def __init__(self):
+                self.removed = []
+
+            def rmfile(self, path):
+                self.removed.append(('file', path))
+                return True
+
+            def rmdir(self, path):
+                self.removed.append(('directory', path))
+                return True
+
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = Remote()
+        rotations = []
+        instance._rotateBackups = lambda: rotations.append(True)
+        original_notification = backup_module.utils.showNotification
+        backup_module.utils.showNotification = lambda _message: None
+        try:
+            self.assertFalse(instance._finalizeBackup(
+                False, '/backup/', compressed=False))
+            self.assertEqual([], rotations)
+            self.assertEqual(
+                [('directory', '/backup/')],
+                instance.remote_vfs.removed)
+
+            self.assertTrue(instance._finalizeBackup(
+                True, '/backup/', compressed=False))
+            self.assertEqual([True], rotations)
+
+            instance._rotateBackups = lambda: False
+            self.assertFalse(instance._finalizeBackup(
+                True, '/verified-backup/', compressed=False))
+            self.assertNotIn(
+                ('directory', '/verified-backup/'),
+                instance.remote_vfs.removed)
+
+            self.assertFalse(instance._finalizeBackup(
+                False, '/backup.zip', compressed=True))
+            self.assertEqual(
+                [('directory', '/backup/'), ('file', '/backup.zip')],
+                instance.remote_vfs.removed)
+        finally:
+            backup_module.utils.showNotification = original_notification
+
+    def test_backup_wrapper_always_closes_after_failure(self):
+        instance = object.__new__(XbmcBackup)
+        instance._vfs_closed = False
+        instance._active_artifact = '/fresh-backup/'
+        instance._active_artifact_compressed = False
+        closed = []
+        removed = []
+        instance.remote_vfs = type('Remote', (), {
+            'rmdir': lambda _self, path: removed.append(path),
+        })()
+
+        def fail(_progress_override):
+            raise IOError('simulated failure')
+
+        def close():
+            instance._vfs_closed = True
+            closed.append(True)
+
+        instance._runBackup = fail
+        instance._closeVFS = close
+        original_notification = backup_module.utils.showNotification
+        backup_module.utils.showNotification = lambda _message: None
+        try:
+            self.assertFalse(instance.backup())
+            self.assertEqual([True], closed)
+            self.assertEqual(['/fresh-backup/'], removed)
+        finally:
+            backup_module.utils.showNotification = original_notification
 
 
 if __name__ == '__main__':

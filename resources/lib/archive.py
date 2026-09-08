@@ -229,7 +229,7 @@ def validate_archive_layout(entries, manifest):
     }
 
 
-def verify_archive_payload(entries, manifest, open_member):
+def verify_archive_payload(entries, manifest, open_member, check_cancel=None):
     """Stream and verify every declared payload member before extraction."""
     layout = validate_archive_layout(entries, manifest)
     root = layout['root']
@@ -241,11 +241,14 @@ def verify_archive_payload(entries, manifest, open_member):
 
     for group in layout['manifest']['directories']:
         for item in group['files']:
+            if check_cancel and check_cancel():
+                raise ArchiveValidationError('archive verification cancelled')
             archive_path = '%s/%s/%s' % (
                 root, group['name'], item['path'])
             try:
                 with open_member(index[archive_path.casefold()]) as source:
-                    checksum, size = sha256_reader(source.read)
+                    checksum, size = sha256_reader(
+                        source.read, check_cancel=check_cancel)
             except Exception as error:
                 raise ArchiveValidationError(
                     'unable to read archive member %s: %s' % (
@@ -259,10 +262,58 @@ def verify_archive_payload(entries, manifest, open_member):
     return layout
 
 
-def sha256_reader(read_chunk, chunk_size=1024 * 1024):
+def verify_manifest_files(manifest, hash_file, check_cancel=None):
+    """Verify a folder-form backup through a caller-provided streaming hasher."""
+    validated = validate_manifest(manifest)
+    verified_files = 0
+    verified_bytes = 0
+    for group in validated['directories']:
+        for item in group['files']:
+            if check_cancel and check_cancel():
+                raise ArchiveValidationError('backup verification cancelled')
+            path = group['name'] + '/' + item['path']
+            try:
+                checksum, size = hash_file(path)
+            except Exception as error:
+                raise ArchiveValidationError(
+                    'unable to read backup file %s: %s' % (path, error))
+            if size != item['size']:
+                raise ArchiveValidationError(
+                    'backup file size mismatch: ' + path)
+            if checksum != item['sha256']:
+                raise ArchiveValidationError(
+                    'backup file checksum mismatch: ' + path)
+            verified_files += 1
+            verified_bytes += size
+    return {
+        'file_count': verified_files,
+        'total_bytes': verified_bytes,
+    }
+
+
+def verify_zip_archive(path, check_cancel=None):
+    """Open and fully verify one completed Backup Pro ZIP on local storage."""
+    try:
+        with zipfile.ZipFile(path, 'r') as archive:
+            entries = archive.infolist()
+            validate_archive_members(entries)
+            manifest_member, _root = find_manifest_member(entries)
+            manifest_data = archive.read(manifest_member).decode('utf-8')
+            manifest = load_manifest(manifest_data)
+            return verify_archive_payload(
+                entries, manifest, archive.open, check_cancel=check_cancel)
+    except ArchiveValidationError:
+        raise
+    except Exception as error:
+        raise ArchiveValidationError('unable to verify ZIP archive: %s' % error)
+
+
+def sha256_reader(read_chunk, chunk_size=1024 * 1024, check_cancel=None):
     digest = hashlib.sha256()
     size = 0
     while True:
+        if check_cancel and check_cancel():
+            raise ArchiveValidationError('hashing cancelled')
         chunk = read_chunk(chunk_size)
         if not chunk:
             break
@@ -273,7 +324,7 @@ def sha256_reader(read_chunk, chunk_size=1024 * 1024):
     return digest.hexdigest(), size
 
 
-def build_manifest(groups, hash_file, metadata=None):
+def build_manifest(groups, hash_file, metadata=None, check_cancel=None):
     """Create a validated manifest from a measured backup plan."""
     directories = []
     for group in groups:
@@ -286,6 +337,8 @@ def build_manifest(groups, hash_file, metadata=None):
         for item in group.get('files', []):
             if item.get('is_dir'):
                 continue
+            if check_cancel and check_cancel():
+                raise ArchiveValidationError('manifest creation cancelled')
             path = normalize_member_path(relative_path(item['file'], root))
             checksum, size = hash_file(item['file'])
             files.append({

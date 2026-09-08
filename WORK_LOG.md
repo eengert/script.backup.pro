@@ -68,5 +68,27 @@ installed and no Kodi profile or Apple TV was changed.
 
 Validation: 35 pure, real-ZIP and Kodi-bridge tests, Python compilation, XML parsing and
 Git whitespace checks passed. This phase did not install the add-on or write to
-any Kodi profile or Apple TV. Payload read-back and restore hash verification
-remain Phase 4B work.
+any Kodi profile or Apple TV. Published-backup read-back remained Phase 4B work
+at this checkpoint; live restore verification remains transactional-restore work.
+
+## Phase 4B - verified publication and retention gate
+
+- Reads back and hashes the published manifest plus every uncompressed backup
+  file against the locally generated manifest.
+- Fully validates a completed local ZIP before upload, then reads back the
+  uploaded object and requires an exact size and SHA-256 match.
+- Supports exact verification for Kodi VFS destinations and bounded temporary
+  downloads for Dropbox destinations.
+- Treats cancellation as failure and never runs retention after copy or
+  verification failure.
+- Uses fresh second-resolution targets, refuses pre-existing folder/ZIP targets
+  and removes the complete newly created artifact after a failed operation.
+- Keeps cancellation active during manifest hashing and read-back verification,
+  reports interrupted retention as incomplete, and guarantees VFS/progress
+  cleanup when the backup path raises.
+- Corrected Dropbox's exact chunk-boundary upload behavior and guaranteed local
+  source handles are closed on retries.
+
+Validation: 43 pure, real-ZIP and Kodi-bridge tests, Python compilation, XML
+parsing and Git whitespace checks passed. No add-on installation, Kodi-profile
+mutation or Apple TV access occurred.

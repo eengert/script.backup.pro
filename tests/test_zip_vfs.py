@@ -12,7 +12,8 @@ from tests.test_backup_bridge import install_kodi_stubs
 install_kodi_stubs()
 
 import xbmcvfs  # noqa: E402
-from resources.lib.vfs import ZipFileSystem  # noqa: E402
+from resources.lib import vfs as vfs_module  # noqa: E402
+from resources.lib.vfs import DropboxFileSystem, ZipFileSystem  # noqa: E402
 from resources.lib.archive import ARCHIVE_ID, ARCHIVE_VERSION, MANIFEST_NAME  # noqa: E402
 from resources.lib.extractor import ZipExtractor  # noqa: E402
 
@@ -101,6 +102,34 @@ class ZipFileSystemTests(unittest.TestCase):
                     output, '202609081200', 'config', 'settings.xml'),
                     'rb') as handle:
                 self.assertEqual(payload, handle.read())
+
+
+class DropboxFileSystemTests(unittest.TestCase):
+    def test_exact_chunk_size_uses_complete_single_upload(self):
+        calls = []
+
+        class Client:
+            def files_upload(self, content, path, mode=None):
+                calls.append((content, path, mode))
+
+            def files_upload_session_start(self, _content):
+                raise AssertionError('exact boundary must not start a session')
+
+        original_write_mode = vfs_module.WriteMode
+        vfs_module.WriteMode = lambda value: value
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                source = os.path.join(directory, 'boundary.bin')
+                with open(source, 'wb') as handle:
+                    handle.write(b'abcd')
+                target = object.__new__(DropboxFileSystem)
+                target.client = Client()
+                target.MAX_CHUNK = 4
+                self.assertTrue(target.put(source, '/boundary.bin'))
+                self.assertEqual(
+                    [(b'abcd', '/boundary.bin', 'overwrite')], calls)
+        finally:
+            vfs_module.WriteMode = original_write_mode
 
 
 if __name__ == '__main__':

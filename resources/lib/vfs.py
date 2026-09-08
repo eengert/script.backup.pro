@@ -231,43 +231,38 @@ class DropboxFileSystem(Vfs):
     def put(self, source, dest, retry=True):
         dest = self._fix_slashes(dest)
 
-        if(self.client is not None):
-            # open the file and get its size
-            f = open(source, 'rb')
-            f_size = os.path.getsize(source)
-
-            try:
-                if(f_size < self.MAX_CHUNK):
-                    # use the regular upload
-                    self.client.files_upload(f.read(), dest, mode=WriteMode('overwrite'))
-                else:
-                    # start the upload session
-                    upload_session = self.client.files_upload_session_start(f.read(self.MAX_CHUNK))
-                    upload_cursor = UploadSessionCursor(upload_session.session_id, f.tell())
-
-                    while(f.tell() < f_size):
-                        # check if we should finish the upload
-                        if((f_size - f.tell()) <= self.MAX_CHUNK):
-                            # upload and close
-                            self.client.files_upload_session_finish(f.read(self.MAX_CHUNK), upload_cursor, CommitInfo(dest, mode=WriteMode('overwrite')))
-                        else:
-                            # upload a part and store the offset
-                            self.client.files_upload_session_append_v2(f.read(self.MAX_CHUNK), upload_cursor)
-                            upload_cursor.offset = f.tell()
-
-                # if no errors we're good!
-                return True
-            except Exception as anError:
-                utils.log(str(anError))
-
-                # if we have an exception retry
-                if(retry):
-                    return self.put(source, dest, False)
-                else:
-                    # tried once already, just quit
-                    return False
-        else:
+        if(self.client is None):
             return False
+
+        attempts = 2 if retry else 1
+        for _attempt in range(attempts):
+            try:
+                file_size = os.path.getsize(source)
+                with open(source, 'rb') as source_file:
+                    if file_size <= self.MAX_CHUNK:
+                        self.client.files_upload(
+                            source_file.read(), dest,
+                            mode=WriteMode('overwrite'))
+                    else:
+                        session = self.client.files_upload_session_start(
+                            source_file.read(self.MAX_CHUNK))
+                        cursor = UploadSessionCursor(
+                            session.session_id, source_file.tell())
+                        while source_file.tell() < file_size:
+                            remaining = file_size - source_file.tell()
+                            if remaining <= self.MAX_CHUNK:
+                                self.client.files_upload_session_finish(
+                                    source_file.read(self.MAX_CHUNK), cursor,
+                                    CommitInfo(
+                                        dest, mode=WriteMode('overwrite')))
+                            else:
+                                self.client.files_upload_session_append_v2(
+                                    source_file.read(self.MAX_CHUNK), cursor)
+                                cursor.offset = source_file.tell()
+                return True
+            except Exception as error:
+                utils.log(str(error))
+        return False
 
     def fileSize(self, filename):
         result = 0
