@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from resources.lib import skin_coordinator, skin_state, skin_transaction
+from resources.lib.skin_adapter import AF3_ID
 from resources.lib.skin_restore import (
     SETTINGS_PATH,
     advance_pending_restore,
@@ -49,6 +50,23 @@ class FakeHost:
         if self.skin == skin:
             raise AssertionError('settings staged while target skin was active')
         self._event('stage_settings', skin, document, values)
+
+    def activate_skin(self, skin):
+        self._event('activate_skin', skin)
+        self.skin = skin
+
+    def verify_loaded_settings(self, skin, values):
+        if self.skin != skin:
+            raise AssertionError('verified settings for an inactive skin')
+        self._event('verify_loaded_settings', skin, values)
+
+    def apply_appearance(self, values):
+        self._event('apply_appearance', values)
+
+    def rebuild_skin(self, skin, pending):
+        if self.skin != skin:
+            raise AssertionError('rebuilt an inactive skin')
+        self._event('rebuild_skin', skin, pending)
 
     def progress(self, percent, message):
         self.events.append(('progress', percent, message))
@@ -280,6 +298,61 @@ class SkinCoordinatorTests(unittest.TestCase):
                 self.stage(FakeHost())
         self.assertIsNone(skin_state.read_pending_state(self.state))
         self.assertFalse((self.profile / SETTINGS_PATH).exists())
+
+    def test_finish_activates_rebuilds_verifies_then_clears_state(self):
+        host = FakeHost()
+        pending = self.stage(host)
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        finish_names = [event[0] for event in host.events]
+        activate = finish_names.index('activate_skin')
+        first_verify = finish_names.index('verify_loaded_settings')
+        appearance = finish_names.index('apply_appearance')
+        rebuild = finish_names.index('rebuild_skin')
+        last_verify = len(finish_names) - 1 - finish_names[::-1].index(
+            'verify_loaded_settings')
+        self.assertLess(activate, first_verify)
+        self.assertLess(first_verify, appearance)
+        self.assertLess(appearance, rebuild)
+        self.assertLess(rebuild, last_verify)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+        self.assertEqual(AF3_ID, result['skin_id'])
+        self.assertEqual(len(pending['skin_settings']),
+                         result['setting_count'])
+
+    def test_finish_failure_preserves_pending_and_completed_rollback(self):
+        host = FakeHost()
+        pending = self.stage(host)
+        host.fail = 'rebuild_skin'
+        with self.assertRaises(RuntimeError):
+            skin_coordinator.finish_skin_restore(
+                self.profile, self.rollback, self.state, host)
+        self.assertEqual(pending, skin_state.read_pending_state(self.state))
+        self.assertEqual('complete', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, pending['rollback'],
+            pending['transaction_id']))
+
+    def test_finish_rejects_changed_helper_source_and_keeps_pending(self):
+        host = FakeHost()
+        pending = self.stage(host)
+        helper = next(iter(pending['helper_hashes']))
+        (self.profile / helper).write_bytes(b'{}\n')
+        with self.assertRaisesRegex(
+                skin_coordinator.SkinCoordinatorError,
+                'helper sources'):
+            skin_coordinator.finish_skin_restore(
+                self.profile, self.rollback, self.state, host)
+        self.assertEqual(pending, skin_state.read_pending_state(self.state))
+
+    def test_finish_requires_exact_rebuild_phase(self):
+        host = FakeHost(fail='stage_settings')
+        with self.assertRaises(RuntimeError):
+            self.stage(host)
+        with self.assertRaisesRegex(
+                skin_coordinator.SkinCoordinatorError, 'not ready'):
+            skin_coordinator.finish_skin_restore(
+                self.profile, self.rollback, self.state, FakeHost())
 
 
 if __name__ == '__main__':

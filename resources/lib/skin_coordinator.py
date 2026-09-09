@@ -4,6 +4,7 @@ from __future__ import unicode_literals
 
 import os
 import stat
+import hashlib
 from contextlib import contextmanager
 
 from .skin_adapter import AF3_ID, SKIN_VARIABLES_ID, validate_snapshot_files
@@ -12,10 +13,15 @@ from .skin_restore import (
     advance_pending_restore,
     build_pending_restore,
 )
-from .skin_state import read_pending_state, write_pending_state
+from .skin_state import (
+    clear_pending_state,
+    read_pending_state,
+    write_pending_state,
+)
 from .skin_transaction import (
     apply_skin_snapshot,
     pending_skin_transactions,
+    read_current_managed_files,
     skin_transaction_status,
 )
 
@@ -211,3 +217,54 @@ def inspect_pending_restore(profile_path, rollback_root, pending_path):
         raise SkinCoordinatorError(
             'pending restore and transaction phases are inconsistent')
     return {'action': action, 'phase': phase, 'status': status}
+
+
+def _verify_helper_sources(profile_path, expected):
+    files = read_current_managed_files(profile_path, AF3_ID)
+    actual = {
+        path: hashlib.sha256(data).hexdigest()
+        for path, data in files.items() if path != SETTINGS_PATH
+    }
+    if actual != expected:
+        raise SkinCoordinatorError(
+            'restored AF3 helper sources did not remain applied')
+
+
+def finish_skin_restore(profile_path, rollback_root, pending_path, host):
+    """Activate, rebuild and verify a staged AF3 restore before clearing it."""
+    with _operation_lock(pending_path):
+        action = inspect_pending_restore(
+            profile_path, rollback_root, pending_path)
+        if action['action'] != 'finish_rebuild':
+            raise SkinCoordinatorError(
+                'staged skin restore is not ready for rebuild')
+        pending = read_pending_state(pending_path)
+        _call(host, 'ensure_dependencies', AF3_ID, SKIN_VARIABLES_ID)
+        _progress(host, 10, 'Activating restored Arctic Fuse 3')
+        _call(host, 'activate_skin', AF3_ID)
+        if _call(host, 'active_skin') != AF3_ID:
+            raise SkinCoordinatorError('restored AF3 skin is not active')
+
+        _progress(host, 30, 'Verifying restored AF3 settings')
+        _call(host, 'verify_loaded_settings', AF3_ID,
+              pending['skin_settings'])
+        _progress(host, 45, 'Applying restored AF3 appearance')
+        _call(host, 'apply_appearance',
+              pending['skin_config']['appearance'])
+        _progress(host, 60, 'Rebuilding AF3 menus and widgets')
+        _call(host, 'rebuild_skin', AF3_ID, pending)
+
+        _progress(host, 90, 'Verifying completed AF3 restore')
+        if _call(host, 'active_skin') != AF3_ID:
+            raise SkinCoordinatorError('AF3 changed during restore rebuild')
+        _call(host, 'verify_loaded_settings', AF3_ID,
+              pending['skin_settings'])
+        _verify_helper_sources(profile_path, pending['helper_hashes'])
+        clear_pending_state(pending_path, pending)
+        _progress(host, 100, 'AF3 restore complete')
+        return {
+            'skin_id': AF3_ID,
+            'setting_count': len(pending['skin_settings']),
+            'helper_file_count': len(pending['helper_hashes']),
+            'appearance_count': len(pending['skin_config']['appearance']),
+        }

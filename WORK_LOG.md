@@ -1,5 +1,16 @@
 # Backup Pro work log
 
+## Phase 7B4a - Normal restore completion coordinator
+
+- Added locked completion orchestration for a staged `rebuild` transaction.
+- Orders AF3 activation, live-settings verification, appearance application,
+  adapter rebuild, repeated settings verification and exact helper-source hash
+  verification.
+- Clears pending state only after all completion checks pass; injected failures
+  preserve the exact pending record and completed rollback transaction.
+- Deferred rollback completion until schema v3 can durably describe the
+  previous settings, helper files and appearance separately from the archive.
+
 ## Phase 7B3b - Verified Kodi host boundary
 
 - Added a dependency-injected Kodi facade for installed add-on checks,

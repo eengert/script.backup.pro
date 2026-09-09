@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.2
+
+### Added
+
+- Locked normal-restore completion coordinator for AF3 activation, settings
+  verification, appearance, rebuild and helper-source verification.
+
+### Security
+
+- Pending state is cleared only after every completion check succeeds and is
+  preserved with its exact rollback transaction after any injected failure.
+
 ## Version 0.9.1
 
 ### Added
