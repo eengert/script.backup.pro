@@ -154,7 +154,7 @@ class ManifestTests(unittest.TestCase):
         }
         metadata = {
             'adapter_id': 'backup-pro.af3',
-            'adapter_version': 1,
+            'adapter_version': 2,
             'skin_id': 'skin.arctic.fuse.3',
             'skin_version': '3.9.0',
             'helper_id': 'script.skinvariables',
@@ -166,6 +166,7 @@ class ManifestTests(unittest.TestCase):
             'file_count': 2,
             'total_bytes': sum(len(value) for value in payloads.values()),
             'fingerprint': snapshot_fingerprint(snapshot_files),
+            'appearance': {},
         }
         result = build_manifest([{
             'name': 'skin_config',

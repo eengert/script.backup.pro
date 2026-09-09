@@ -30,6 +30,7 @@ from resources.lib.planning import (
 )
 from resources.lib.skin_adapter import (
     AF3_ID,
+    APPEARANCE_SETTINGS,
     SKIN_VARIABLES_ID,
     SkinAdapterError,
     capture_af3_snapshot,
@@ -619,14 +620,28 @@ class XbmcBackup:
             self.backup_plan, sort_keys=True))
         return allFiles
 
-    def _skinRpc(self, method):
+    def _skinRpc(self, method, **params):
         request = json.dumps({
-            'jsonrpc': '2.0', 'method': method, 'params': {}, 'id': 1,
+            'jsonrpc': '2.0', 'method': method, 'params': params, 'id': 1,
         })
         response = json.loads(xbmc.executeJSONRPC(request))
         if not isinstance(response, dict) or 'error' in response:
             raise SkinAdapterError('Kodi could not complete ' + method)
         return response.get('result')
+
+    def _skinAppearance(self):
+        values = {}
+        for setting in APPEARANCE_SETTINGS:
+            try:
+                result = self._skinRpc(
+                    'Settings.GetSettingValue', setting=setting)
+            except SkinAdapterError:
+                # Kodi platforms may omit an individual appearance setting.
+                # Preserve every value Kodi does expose without inventing one.
+                continue
+            if isinstance(result, dict) and result.get('value') is not None:
+                values[setting] = result['value']
+        return values
 
     def _captureSkinConfigGroup(self):
         if xbmc.getSkinDir() != AF3_ID:
@@ -642,6 +657,7 @@ class XbmcBackup:
             helper_version=xbmcaddon.Addon(
                 SKIN_VARIABLES_ID).getAddonInfo('version'),
             settle=lambda: xbmc.sleep(2000),
+            appearance_call=self._skinAppearance,
         )
         owned_paths = managed_source_paths(snapshot['files'])
         stage_root = os.path.abspath(os.path.join(

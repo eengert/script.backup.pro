@@ -55,6 +55,8 @@ def skin_restore_preview(manifest):
         'created_utc': validated.get('created_utc', ''),
         'setting_count': metadata['setting_count'],
         'helper_file_count': metadata['helper_file_count'],
+        'appearance_count': len(metadata['appearance']),
+        'appearance': dict(metadata['appearance']),
         'total_bytes': sum(item['size'] for item in group['files']),
         'rollback_required': True,
     }

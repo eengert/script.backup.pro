@@ -26,7 +26,7 @@ def fixture():
     } for path, data in sorted(payloads.items())]
     metadata = {
         'adapter_id': 'backup-pro.af3',
-        'adapter_version': 1,
+        'adapter_version': 2,
         'skin_id': 'skin.arctic.fuse.3',
         'skin_version': '3.9.0',
         'helper_id': 'script.skinvariables',
@@ -38,6 +38,10 @@ def fixture():
         'file_count': 2,
         'total_bytes': sum(len(data) for data in payloads.values()),
         'fingerprint': snapshot_fingerprint(payloads),
+        'appearance': {
+            'lookandfeel.skincolors': 'Dark',
+            'lookandfeel.font': 'Default',
+        },
     }
     manifest = validate_manifest({
         'archive_id': ARCHIVE_ID,
@@ -63,6 +67,9 @@ class SkinRestoreTests(unittest.TestCase):
         self.assertEqual('3.9.0', preview['skin_version'])
         self.assertEqual(1, preview['setting_count'])
         self.assertEqual(1, preview['helper_file_count'])
+        self.assertEqual(2, preview['appearance_count'])
+        self.assertEqual('Dark', preview['appearance'][
+            'lookandfeel.skincolors'])
         self.assertTrue(preview['rollback_required'])
 
     def test_load_verifies_every_payload_and_honors_cancellation(self):

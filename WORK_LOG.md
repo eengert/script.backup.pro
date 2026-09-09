@@ -1,5 +1,13 @@
 # Backup Pro work log
 
+## Phase 7B2d - AF3 appearance contract
+
+- Added stable capture for Kodi's AF3 theme, colors, font and zoom settings.
+- Added strict allowlist/type/bounds validation in adapter metadata, pending
+  state and restore preview.
+- Individual appearance settings unavailable on a Kodi platform are omitted
+  rather than invented; changing values invalidate the snapshot.
+
 ## Phase 7B2c - Pre-mutation transaction handoff
 
 - Added a `transaction_prepared` phase between pending intent and file

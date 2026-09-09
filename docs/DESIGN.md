@@ -74,8 +74,9 @@ Required behavior:
    validated settings document.
 2. Include AF3 Skin Variables source JSON and viewtype data, not generated
    build products or build fingerprints.
-3. Preview skin ID, source device/profile, versions, setting count and helper
-   file count before restore.
+3. Preserve theme, colors, font and zoom when Kodi exposes them; preview skin
+   ID, source device/profile, versions, setting/appearance/helper counts before
+   restore.
 4. Stop playback and switch away from the target skin before replacement.
 5. Create durable pending state and a rollback snapshot before mutation.
 6. Stage verified data through Kodi VFS while AF3 is inactive.
@@ -133,7 +134,7 @@ live-file copy without preflight and recovery planning.
    recovery, verified payload loading, canonical pending-state serialization,
    atomic local persistence, enforced crash-phase transitions,
    pre-mutation rollback handoff, preview/pending-state validation and
-   failure-injection tests are complete. Kodi wiring, VFS staging, AF3
+   stable AF3 appearance capture are complete. Kodi wiring, VFS staging, AF3
    activation/rebuild and end-to-end verification remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.

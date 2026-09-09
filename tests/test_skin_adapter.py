@@ -170,9 +170,16 @@ class SkinAdapterTests(unittest.TestCase):
             calls.append(method)
             return result
 
+        appearance = {
+            'lookandfeel.skintheme': 'SKINDEFAULT',
+            'lookandfeel.skincolors': 'Dark',
+            'lookandfeel.font': 'Default',
+            'lookandfeel.skinzoom': 0,
+        }
         snapshot = skin_adapter.capture_af3_snapshot(
             self.profile, rpc, source_device='MacBook', source_profile='Master',
-            skin_version='3.9.0', helper_version='2.2.1')
+            skin_version='3.9.0', helper_version='2.2.1',
+            appearance_call=lambda: appearance)
         settings = ElementTree.fromstring(
             snapshot['files']['addon_data/skin.arctic.fuse.3/settings.xml'])
 
@@ -184,6 +191,7 @@ class SkinAdapterTests(unittest.TestCase):
         self.assertEqual(1, snapshot['metadata']['helper_file_count'])
         self.assertEqual('MacBook', snapshot['metadata']['source_device'])
         self.assertEqual('Master', snapshot['metadata']['source_profile'])
+        self.assertEqual(appearance, snapshot['metadata']['appearance'])
         self.assertEqual(64, len(snapshot['metadata']['fingerprint']))
 
     def test_capture_rejects_settings_that_change_during_collection(self):
@@ -205,6 +213,25 @@ class SkinAdapterTests(unittest.TestCase):
                     self.profile, lambda _method: self.result(),
                     settle=lambda: settled.append(True))
         self.assertEqual([True], settled)
+
+    def test_capture_rejects_changed_or_invalid_appearance(self):
+        appearances = iter((
+            {'lookandfeel.font': 'Default'},
+            {'lookandfeel.font': 'Large'},
+        ))
+        with self.assertRaises(skin_adapter.SkinAdapterError):
+            skin_adapter.capture_af3_snapshot(
+                self.profile, lambda _method: self.result(),
+                appearance_call=lambda: next(appearances))
+
+        for invalid in (
+                {'unknown.setting': 'value'},
+                {'lookandfeel.font': None},
+                {'lookandfeel.skinzoom': True},
+                {'lookandfeel.skinzoom': float('nan')}):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(skin_adapter.SkinAdapterError):
+                    skin_adapter.checked_appearance(invalid)
 
 
 if __name__ == '__main__':

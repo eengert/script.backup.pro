@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.8.4
+
+### Added
+
+- Stable capture, manifest validation and restore preview for AF3's Kodi theme,
+  colors, font and zoom appearance settings.
+
+### Security
+
+- Accepts only the four allowlisted appearance settings with bounded,
+  setting-specific value types and rejects unstable snapshots.
+
 ## Version 0.8.3
 
 ### Added

@@ -34,7 +34,7 @@ def install_kodi_stubs():
 
         def getAddonInfo(self, name):
             return {'path': '.', 'profile': '/profile/',
-                    'version': '0.8.3'}.get(name, '')
+                    'version': '0.8.4'}.get(name, '')
 
         def getLocalizedString(self, string_id):
             return str(string_id)
@@ -99,6 +99,40 @@ from tests.test_planning import FakeVfs  # noqa: E402
 
 
 class BackupBridgeTests(unittest.TestCase):
+    def test_skin_appearance_uses_parameterized_rpc_and_skips_unavailable(self):
+        original_rpc = backup_module.xbmc.executeJSONRPC
+        requests = []
+
+        def execute(document):
+            request = json.loads(document)
+            requests.append(request)
+            setting = request['params']['setting']
+            if setting == 'lookandfeel.font':
+                return json.dumps({'id': 1, 'error': {'code': -32602}})
+            values = {
+                'lookandfeel.skintheme': 'SKINDEFAULT',
+                'lookandfeel.skincolors': 'Dark',
+                'lookandfeel.skinzoom': 0,
+            }
+            return json.dumps({'id': 1, 'result': {
+                'value': values[setting],
+            }})
+
+        try:
+            backup_module.xbmc.executeJSONRPC = execute
+            instance = object.__new__(XbmcBackup)
+            self.assertEqual({
+                'lookandfeel.skintheme': 'SKINDEFAULT',
+                'lookandfeel.skincolors': 'Dark',
+                'lookandfeel.skinzoom': 0,
+            }, instance._skinAppearance())
+            self.assertEqual(4, len(requests))
+            self.assertTrue(all(request['method'] ==
+                                'Settings.GetSettingValue'
+                                for request in requests))
+        finally:
+            backup_module.xbmc.executeJSONRPC = original_rpc
+
     def test_skin_and_tmdb_exclusions_are_combined(self):
         original_setting = backup_module.utils.getSettingBool
         try:

@@ -10,6 +10,7 @@ read by this module.
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -20,7 +21,13 @@ from xml.etree import ElementTree
 AF3_ID = 'skin.arctic.fuse.3'
 SKIN_VARIABLES_ID = 'script.skinvariables'
 ADAPTER_ID = 'backup-pro.af3'
-ADAPTER_VERSION = 1
+ADAPTER_VERSION = 2
+APPEARANCE_SETTINGS = (
+    'lookandfeel.skintheme',
+    'lookandfeel.skincolors',
+    'lookandfeel.font',
+    'lookandfeel.skinzoom',
+)
 
 MAX_SETTING_COUNT = 10000
 MAX_FILE_COUNT = 2000
@@ -134,6 +141,27 @@ def skin_settings_equal(left, right):
         return False
     return ({item['id']: (item['type'], item['value']) for item in left} ==
             {item['id']: (item['type'], item['value']) for item in right})
+
+
+def checked_appearance(values):
+    """Validate the Kodi appearance values needed to reproduce AF3's look."""
+    if not isinstance(values, dict) or any(
+            key not in APPEARANCE_SETTINGS for key in values):
+        raise SkinAdapterError('invalid AF3 appearance settings')
+    checked = {}
+    for key in APPEARANCE_SETTINGS:
+        if key not in values:
+            continue
+        value = values[key]
+        if key == 'lookandfeel.skinzoom':
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(value) or abs(value) > 1000):
+                raise SkinAdapterError('invalid AF3 skin zoom')
+        elif (not isinstance(value, str) or len(value) > 256
+              or '\x00' in value):
+            raise SkinAdapterError('invalid AF3 appearance value')
+        checked[key] = value
+    return checked
 
 
 def _settings_path(skin_id):
@@ -477,7 +505,7 @@ def validate_snapshot_manifest(metadata, files):
         'adapter_id', 'adapter_version', 'skin_id', 'skin_version',
         'helper_id', 'helper_version', 'source_device', 'source_profile',
         'setting_count', 'helper_file_count', 'file_count', 'total_bytes',
-        'fingerprint',
+        'fingerprint', 'appearance',
     }
     if set(metadata) != required:
         raise SkinAdapterError('invalid AF3 snapshot metadata fields')
@@ -500,6 +528,7 @@ def validate_snapshot_manifest(metadata, files):
     fingerprint = metadata.get('fingerprint')
     if not isinstance(fingerprint, str) or not _SHA256.fullmatch(fingerprint):
         raise SkinAdapterError('invalid AF3 snapshot fingerprint')
+    appearance = checked_appearance(metadata.get('appearance'))
 
     paths = []
     total_bytes = 0
@@ -525,7 +554,9 @@ def validate_snapshot_manifest(metadata, files):
             or metadata['helper_file_count'] != len(files) - 1
             or metadata['total_bytes'] != total_bytes):
         raise SkinAdapterError('AF3 snapshot metadata does not match its files')
-    return dict(metadata)
+    result = dict(metadata)
+    result['appearance'] = appearance
+    return result
 
 
 def _metadata_text(value, name):
@@ -538,11 +569,13 @@ def _metadata_text(value, name):
 
 def capture_af3_snapshot(profile_path, rpc_call, source_device='',
                          source_profile='', skin_version='', helper_version='',
-                         settle=None):
+                         settle=None, appearance_call=None):
     """Capture one stable AF3 configuration snapshot without mutating Kodi."""
     if not callable(rpc_call):
         raise SkinAdapterError('Kodi JSON-RPC reader is unavailable')
     first = live_skin_setting_values(rpc_call('Settings.GetSkinSettings'), AF3_ID)
+    first_appearance = checked_appearance(
+        appearance_call() if appearance_call is not None else {})
     first_helpers = collect_helper_files(profile_path, AF3_ID)
     first_helper_fingerprint = snapshot_fingerprint(first_helpers)
     if settle is not None:
@@ -551,8 +584,11 @@ def capture_af3_snapshot(profile_path, rpc_call, source_device='',
         settle()
     helpers = collect_helper_files(profile_path, AF3_ID)
     current = live_skin_setting_values(rpc_call('Settings.GetSkinSettings'), AF3_ID)
+    appearance = checked_appearance(
+        appearance_call() if appearance_call is not None else {})
     if (not skin_settings_equal(first, current)
-            or first_helper_fingerprint != snapshot_fingerprint(helpers)):
+            or first_helper_fingerprint != snapshot_fingerprint(helpers)
+            or first_appearance != appearance):
         raise SkinAdapterError('skin configuration changed while being collected')
 
     files = dict(helpers)
@@ -576,5 +612,6 @@ def capture_af3_snapshot(profile_path, rpc_call, source_device='',
         'file_count': len(files),
         'total_bytes': total_bytes,
         'fingerprint': snapshot_fingerprint(files),
+        'appearance': appearance,
     }
     return {'metadata': metadata, 'settings': current, 'files': files}
