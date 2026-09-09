@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.3
+
+### Added
+
+- Kodi target-skin activation with an observed postcondition.
+- Staged-document and live typed skin-setting verification.
+- Per-setting appearance application and JSON-RPC read-back verification.
+
 ## Version 0.9.2
 
 ### Added

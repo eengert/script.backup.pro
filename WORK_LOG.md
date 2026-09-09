@@ -1,5 +1,14 @@
 # Backup Pro work log
 
+## Phase 7B4b - Kodi completion verification
+
+- Added observed AF3 activation using the existing interactive skin-switch
+  callback rather than duplicating Kodi's keep-skin dialog handling.
+- Verifies that the staged settings document remains intact and that Kodi's
+  live typed setting map matches before completion can continue.
+- Applies only captured appearance values and verifies each through a JSON-RPC
+  read-back before reporting success.
+
 ## Phase 7B4a - Normal restore completion coordinator
 
 - Added locked completion orchestration for a staged `rebuild` transaction.

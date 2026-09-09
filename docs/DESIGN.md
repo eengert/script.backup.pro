@@ -1,8 +1,8 @@
 # Backup Pro design baseline
 
 Status: AF3 capture, archive integration, restore preflight, file transaction,
-staging/completion coordinators and Kodi staging host boundary complete;
-runtime dispatch and Kodi rebuild implementation pending
+staging/completion coordinators plus Kodi staging, activation, settings and
+appearance host operations complete; runtime dispatch and AF3 rebuild pending
 
 ## Product identity and boundaries
 
@@ -140,8 +140,9 @@ live-file copy without preflight and recovery planning.
    The tested Kodi host boundary enforces dependency, playback, skin-state and
    VFS read-back postconditions. Normal completion clears pending state only
    after activation, settings, appearance, rebuild and helper-source checks.
-   Kodi completion methods, runtime dispatch, rollback/recovery and end-to-end
-   verification remain.
+   Kodi activation and settings/appearance verification are implemented. AF3
+   rebuild, runtime dispatch, rollback/recovery and end-to-end verification
+   remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.
 7. **Mac validation**: compile/package checks, disposable-profile diagnostics,
