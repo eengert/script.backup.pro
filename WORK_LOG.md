@@ -1,5 +1,14 @@
 # Backup Pro work log
 
+## Phase 7B4c - Verified AF3 rebuild
+
+- Invokes Skin Variables' public build routes through a fixed verified plan and
+  waits for a per-run completion token instead of assuming a fixed delay.
+- Refreshes restored node caches, validates the selected AF3 profile slug and
+  writes/read-verifies its generated selector include when needed.
+- Requires the three core generated include documents to be valid XML before
+  and after synchronous `ReloadSkin`, with AF3 active throughout.
+
 ## Phase 7B4b - Kodi completion verification
 
 - Added observed AF3 activation using the existing interactive skin-switch

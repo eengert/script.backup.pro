@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.4
+
+### Added
+
+- Token-confirmed AF3 rebuild using Skin Variables' supported public routes.
+- Generated include validation before and after skin reload, node-cache refresh
+  and verified selected-profile include generation.
+
 ## Version 0.9.3
 
 ### Added
