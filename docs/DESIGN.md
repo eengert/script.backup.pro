@@ -1,7 +1,7 @@
 # Backup Pro design baseline
 
-Status: AF3 capture and verified-archive integration complete; transactional
-restore pending
+Status: AF3 capture, archive integration and file-transaction core complete;
+Kodi restore orchestration pending
 
 ## Product identity and boundaries
 
@@ -129,8 +129,9 @@ live-file copy without preflight and recovery planning.
    preview metadata, verified archive integration and isolated tests using Skin
    Settings Backup behavior. Generic Add-on Data copies exclude the adapter's
    authoritative paths while this option is enabled.
-5. **Transactional restore**: rollback, pending recovery, VFS staging, AF3
-   activation/rebuild and failure-injection tests.
+5. **Transactional restore (in progress)**: durable file rollback, pending
+   recovery and failure-injection tests are complete. VFS staging, AF3
+   activation/rebuild and end-to-end verification remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.
 7. **Mac validation**: compile/package checks, disposable-profile diagnostics,

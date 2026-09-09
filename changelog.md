@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.7.0
+
+### Added
+
+- Durable AF3 file-transaction journals and exact pre-mutation rollback
+  snapshots.
+- Detection and recovery of interrupted snapshot, apply and rollback phases.
+- Manual rollback for completed file transactions, bound to the exact source
+  profile.
+
+### Security
+
+- Validates settings XML and helper JSON before creating transaction state.
+- Rejects symlinked profile, journal, destination and rollback-snapshot paths.
+- Blocks new skin transactions while unresolved recovery state exists.
+- Bounds rollback journal, file and aggregate reads before restoring data.
+
 ## Version 0.6.0
 
 ### Added

@@ -289,14 +289,23 @@ def _enumerate_helper_files(root, skin_id, user_slugs):
             base = Path(dirpath)
             for name in tuple(dirnames) + tuple(filenames):
                 child = base / name
-                info = child.lstat()
+                try:
+                    info = child.lstat()
+                except OSError as error:
+                    raise SkinAdapterError(
+                        'cannot inspect managed helper path') from error
                 if stat.S_ISLNK(info.st_mode):
                     raise SkinAdapterError('symlinks are not allowed in managed helper paths')
             for name in filenames:
                 if not name.endswith('.json'):
                     continue
                 child = base / name
-                if not stat.S_ISREG(child.lstat().st_mode):
+                try:
+                    info = child.lstat()
+                except OSError as error:
+                    raise SkinAdapterError(
+                        'cannot inspect managed helper file') from error
+                if not stat.S_ISREG(info.st_mode):
                     raise SkinAdapterError('managed helper path is not a regular file')
                 found.append(child.relative_to(root).as_posix())
     # Reserve one entry for the authoritative portable settings document.
@@ -327,6 +336,88 @@ def collect_helper_files(profile_path, skin_id=AF3_ID):
             or _enumerate_helper_files(root, skin_id, first_slugs) != first_paths):
         raise SkinAdapterError('managed helper files changed while being collected')
     return files
+
+
+def current_managed_paths(profile_path, skin_id=AF3_ID):
+    """Enumerate raw adapter-owned files, including corrupt rollback inputs."""
+    validate_skin_id(skin_id)
+    root = Path(profile_path)
+    try:
+        declared = _declared_user_slugs(root, skin_id)
+    except SkinAdapterError:
+        # A restore must be able to repair corrupt Skin Variables declarations.
+        declared = ()
+    slugs = tuple(sorted(set(declared) | set(_inferred_user_slugs(root, skin_id))))
+    paths = list(_enumerate_helper_files(root, skin_id, slugs))
+    settings = _settings_path(skin_id)
+    _assert_no_symlink_components(root, settings)
+    settings_path = _profile_file(root, settings)
+    if settings_path.exists():
+        if not stat.S_ISREG(settings_path.lstat().st_mode):
+            raise SkinAdapterError('managed settings path is not a regular file')
+        paths.append(settings)
+    return tuple(sorted(paths))
+
+
+def read_current_managed_files(profile_path, skin_id=AF3_ID):
+    root = Path(profile_path)
+    files = {}
+    total = 0
+    for relative in current_managed_paths(root, skin_id):
+        data = _read_consistent(_profile_file(root, relative))
+        total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise SkinAdapterError('current managed files exceed the total size limit')
+        files[relative] = data
+    return files
+
+
+def validate_snapshot_files(files, skin_id=AF3_ID):
+    """Validate extracted adapter payload bytes before any restore mutation."""
+    validate_skin_id(skin_id)
+    if not isinstance(files, dict) or not files or len(files) > MAX_FILE_COUNT:
+        raise SkinAdapterError('invalid skin adapter file mapping')
+    managed_source_paths(files, skin_id)
+    settings = _settings_path(skin_id)
+    if settings not in files:
+        raise SkinAdapterError('skin adapter snapshot is missing settings.xml')
+    checked = {}
+    total = 0
+    for path, data in files.items():
+        if not isinstance(data, bytes) or len(data) > MAX_FILE_BYTES:
+            raise SkinAdapterError('invalid managed file data: ' + path)
+        total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise SkinAdapterError('skin adapter snapshot exceeds the total size limit')
+        if path == settings:
+            try:
+                root = ElementTree.fromstring(data)
+            except (ElementTree.ParseError, ValueError) as error:
+                raise SkinAdapterError('settings.xml is not valid XML') from error
+            if root.tag != 'settings' or any(child.tag != 'setting' for child in root):
+                raise SkinAdapterError('settings.xml must contain direct setting entries')
+            values = []
+            for item in root:
+                if list(item):
+                    raise SkinAdapterError('skin setting entries cannot be nested')
+                setting_id = item.get('id') or item.get('name')
+                kind = item.get('type') or 'string'
+                if kind == 'bool':
+                    text = (item.text or '').strip().lower()
+                    if text not in ('true', 'false'):
+                        raise SkinAdapterError('invalid boolean skin setting')
+                    values.append({'id': setting_id, 'type': 'boolean',
+                                   'value': text == 'true'})
+                elif kind == 'string':
+                    values.append({'id': setting_id, 'type': 'string',
+                                   'value': item.text or ''})
+                else:
+                    raise SkinAdapterError('unsupported skin setting type')
+            checked_skin_setting_values(values)
+        else:
+            _load_json(data, path)
+        checked[path] = data
+    return checked
 
 
 def snapshot_fingerprint(files):

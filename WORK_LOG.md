@@ -137,3 +137,24 @@ work.
 Validation: 58 unit and bridge tests, Python compilation, XML parsing and Git
 whitespace checks passed. All write-path tests used temporary directories. No
 Kodi profile or Apple TV was modified.
+
+## Phase 7A - transactional AF3 file core
+
+- Validates extracted portable settings XML and every managed helper JSON file
+  before creating rollback state or changing the destination profile.
+- Creates a durable phase journal and exact checksummed snapshot of all current
+  adapter-owned files before mutation, including corrupt helper JSON that a
+  restore may need to repair and later roll back.
+- Atomically replaces incoming files and removes stale managed JSON while
+  leaving unmanaged files untouched.
+- Automatically restores the exact previous state after ordinary write
+  failures and preserves an interrupted `applying` journal after simulated
+  process termination for recovery on the next run.
+- Supports explicit rollback of a completed file transaction, binds journals
+  to the exact profile path, rejects symlinked rollback data and blocks new
+  transactions while recovery is unresolved.
+
+Validation: 65 unit, failure-injection and bridge tests, Python compilation,
+XML parsing and Git whitespace checks passed. All transaction tests used
+temporary profiles. No Kodi profile or Apple TV was modified. Kodi skin
+switching, VFS staging, AF3 rebuild and live verification remain Phase 7B.

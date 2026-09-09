@@ -142,6 +142,18 @@ class SkinAdapterTests(unittest.TestCase):
             skin_adapter.MAX_FILE_BYTES = original_limit
         self.assertTrue(path.exists())
 
+    def test_restore_payload_rejects_nested_settings_and_invalid_json(self):
+        with self.assertRaises(skin_adapter.SkinAdapterError):
+            skin_adapter.validate_snapshot_files({
+                'addon_data/skin.arctic.fuse.3/settings.xml':
+                    b'<settings><setting id="x"><nested /></setting></settings>',
+            })
+        with self.assertRaises(skin_adapter.SkinAdapterError):
+            skin_adapter.validate_snapshot_files({
+                'addon_data/skin.arctic.fuse.3/settings.xml': b'<settings />',
+                'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/main.json': b'NaN',
+            })
+
     def test_capture_uses_live_settings_and_returns_preview_metadata(self):
         helper = ('addon_data/script.skinvariables/nodes/'
                   'skin.arctic.fuse.3/main.json')
