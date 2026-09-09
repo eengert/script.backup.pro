@@ -95,9 +95,229 @@ from resources.lib.archive import (  # noqa: E402
 )
 from resources.lib.backup import FileManager, XbmcBackup  # noqa: E402
 from resources.lib import backup as backup_module  # noqa: E402
+from resources.lib.skin_coordinator import SkinCoordinatorError  # noqa: E402
 from tests.test_planning import FakeVfs  # noqa: E402
 from tests.test_skin_coordinator import FakeHost  # noqa: E402
 from tests.test_skin_restore import fixture as skin_fixture  # noqa: E402
+
+
+class FakeRecoveryDialog:
+    """Records calls; ok()/notification() never block, select() is scripted."""
+
+    def __init__(self, select_return=-1):
+        self.select_return = select_return
+        self.calls = []
+
+    def select(self, title, options):
+        self.calls.append(('select', title, list(options)))
+        return self.select_return
+
+    def ok(self, title, message):
+        self.calls.append(('ok', title, message))
+        return True
+
+    def notification(self, title, message, *_args):
+        self.calls.append(('notification', title, message))
+
+
+class RefusingDialog:
+    """A Dialog that fails the test if background code ever shows UI."""
+
+    def __getattr__(self, name):
+        raise AssertionError(
+            'background/scheduled recovery must never use xbmcgui.Dialog '
+            '(attempted: %s)' % name)
+
+
+class SkinRecoveryDispatchTests(unittest.TestCase):
+    """Exercises XbmcBackup's recovery-runtime/UI dispatch in isolation."""
+
+    def setUp(self):
+        self._originals = {
+            'inspect_pending_restore': backup_module.inspect_pending_restore,
+            'resume_skin_restore_staging':
+                backup_module.resume_skin_restore_staging,
+            'finish_skin_restore': backup_module.finish_skin_restore,
+            'rollback_skin_restore': backup_module.rollback_skin_restore,
+            'BackupProgressBar': backup_module.BackupProgressBar,
+            'Dialog': getattr(backup_module.xbmcgui, 'Dialog', None),
+        }
+        self.calls = []
+        self.current_action = {'action': 'none'}
+
+        def fake_inspect(_profile, _rollback_root, _pending_path):
+            if self.current_action.get('action') == 'raise':
+                raise SkinCoordinatorError('inconsistent AF3 recovery state')
+            return dict(self.current_action)
+
+        def fake_resume(_profile, _rollback_root, _pending_path, _host):
+            self.calls.append('resume')
+
+        def fake_finish(_profile, _rollback_root, _pending_path, _host):
+            self.calls.append('finish')
+            if self.current_action.get('fail_finish'):
+                raise RuntimeError('Kodi refused to activate AF3')
+            self.current_action = {'action': 'none'}
+
+        def fake_rollback(_profile, _rollback_root, _pending_path, _host):
+            self.calls.append('rollback')
+            if self.current_action.get('fail_rollback'):
+                raise RuntimeError('Kodi refused to roll back AF3')
+            self.current_action = {'action': 'none'}
+
+        backup_module.inspect_pending_restore = fake_inspect
+        backup_module.resume_skin_restore_staging = fake_resume
+        backup_module.finish_skin_restore = fake_finish
+        backup_module.rollback_skin_restore = fake_rollback
+        backup_module.BackupProgressBar = lambda *_a, **_k: type(
+            'Progress', (), {
+                'create': lambda self, *_a, **_k: None,
+                'close': lambda self: None,
+            })()
+
+    def tearDown(self):
+        for name, value in self._originals.items():
+            if name == 'Dialog':
+                if value is None:
+                    if hasattr(backup_module.xbmcgui, 'Dialog'):
+                        delattr(backup_module.xbmcgui, 'Dialog')
+                else:
+                    backup_module.xbmcgui.Dialog = value
+            else:
+                setattr(backup_module, name, value)
+
+    def _instance(self):
+        instance = object.__new__(XbmcBackup)
+        instance._skinRecoveryPaths = lambda: ('/profile', '/rollback',
+                                                '/pending')
+        instance._makeSkinHost = lambda: object()
+        return instance
+
+    def test_nothing_pending_does_not_touch_dialogs(self):
+        backup_module.xbmcgui.Dialog = RefusingDialog
+        instance = self._instance()
+        self.current_action = {'action': 'none'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual([], self.calls)
+
+    def test_unsafe_action_shows_diagnostic_and_leaves_state_untouched(self):
+        dialog = FakeRecoveryDialog()
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'restart_preflight'}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual([], self.calls)
+        self.assertEqual(1, len(dialog.calls))
+        self.assertEqual('ok', dialog.calls[0][0])
+        self.assertIn('restart_preflight', dialog.calls[0][2])
+
+    def test_inconsistent_state_shows_diagnostic_and_leaves_state_untouched(
+            self):
+        dialog = FakeRecoveryDialog()
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'raise'}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual([], self.calls)
+        self.assertEqual('ok', dialog.calls[0][0])
+        self.assertIn('inconsistent AF3 recovery state', dialog.calls[0][2])
+
+    def test_cancelling_preserves_pending_state_and_calls_nothing(self):
+        dialog = FakeRecoveryDialog(select_return=-1)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual([], self.calls)
+        self.assertEqual('resume_staging', self.current_action['action'])
+
+    def test_explicit_not_now_choice_preserves_pending_state(self):
+        # 'Not now' is always the last offered option.
+        dialog = FakeRecoveryDialog(select_return=2)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual([], self.calls)
+
+    def test_continue_resumes_staging_then_finishes(self):
+        dialog = FakeRecoveryDialog(select_return=0)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['resume', 'finish'], self.calls)
+        self.assertTrue(any(call[0] == 'notification'
+                            for call in dialog.calls))
+
+    def test_continue_skips_resume_when_already_staged_for_rebuild(self):
+        dialog = FakeRecoveryDialog(select_return=0)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'finish_rebuild'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['finish'], self.calls)
+
+    def test_rollback_choice_restores_previous_configuration(self):
+        # resume_staging offers ['Continue...', 'Restore previous...', 'Not now']
+        dialog = FakeRecoveryDialog(select_return=1)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['rollback'], self.calls)
+
+    def test_rollback_only_action_offers_no_continue_choice(self):
+        dialog = FakeRecoveryDialog(select_return=0)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'rollback_transaction'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['rollback'], self.calls)
+        offered = dialog.calls[0][2]
+        self.assertEqual(2, len(offered))
+        self.assertFalse(any('Continue' in option for option in offered))
+
+    def test_finish_failure_preserves_pending_state_and_reports_it(self):
+        dialog = FakeRecoveryDialog(select_return=0)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'finish_rebuild',
+                               'fail_finish': True}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual(['finish'], self.calls)
+        self.assertEqual('finish_rebuild', self.current_action['action'])
+        self.assertTrue(any(
+            call[0] == 'ok' and 'Recovery data was preserved' in call[2]
+            for call in dialog.calls))
+
+    def test_rollback_failure_preserves_pending_state_and_reports_it(self):
+        dialog = FakeRecoveryDialog(select_return=1)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging',
+                               'fail_rollback': True}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual(['rollback'], self.calls)
+        self.assertEqual('resume_staging', self.current_action['action'])
+        self.assertTrue(any(
+            call[0] == 'ok' and 'Recovery data was preserved' in call[2]
+            for call in dialog.calls))
+
+    def test_background_check_never_uses_dialogs_when_pending(self):
+        backup_module.xbmcgui.Dialog = RefusingDialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertTrue(instance.checkPendingSkinRestoreBackground())
+        self.assertEqual([], self.calls)
+        self.assertEqual('resume_staging', self.current_action['action'])
+
+    def test_background_check_is_false_and_silent_when_nothing_pending(self):
+        backup_module.xbmcgui.Dialog = RefusingDialog
+        instance = self._instance()
+        self.current_action = {'action': 'none'}
+        self.assertFalse(instance.checkPendingSkinRestoreBackground())
+        self.assertEqual([], self.calls)
 
 
 class BackupBridgeTests(unittest.TestCase):

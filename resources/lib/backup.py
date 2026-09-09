@@ -38,10 +38,15 @@ from resources.lib.skin_adapter import (
     managed_source_paths,
 )
 from resources.lib.skin_coordinator import (
+    SkinCoordinatorError,
     finish_skin_restore,
+    inspect_pending_restore,
+    resume_skin_restore_staging,
+    rollback_skin_restore,
     stage_skin_restore,
 )
 from resources.lib.skin_kodi_host import KodiSkinHost
+from resources.lib.skin_recovery import describe_recovery_action
 from resources.lib.skin_restore import (
     load_skin_snapshot,
     skin_restore_preview,
@@ -639,6 +644,109 @@ class XbmcBackup:
         finally:
             self._skin_profile = None
 
+    def _skinRecoveryPaths(self):
+        profile = os.path.abspath(xbmcvfs.translatePath('special://profile/'))
+        data = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
+        rollback_root = os.path.join(data, 'skin-rollback')
+        pending_path = os.path.join(data, 'pending-skin-restore.json')
+        return profile, rollback_root, pending_path
+
+    def inspectSkinRecovery(self):
+        """Classify pending AF3 restore state without mutating anything."""
+        profile, rollback_root, pending_path = self._skinRecoveryPaths()
+        try:
+            inspection = inspect_pending_restore(
+                profile, rollback_root, pending_path)
+        except SkinCoordinatorError as error:
+            utils.log('AF3 recovery inspection failed: %s' % error,
+                      xbmc.LOGWARNING)
+            return {'kind': 'diagnostic', 'action': None, 'reason': str(error)}
+        return describe_recovery_action(inspection)
+
+    def resolvePendingSkinRestore(self):
+        """Interactively resolve a pending AF3 restore before anything else.
+
+        Returns True if a pending restore still blocks unrelated actions
+        (nothing was resolved, the user deferred, or recovery failed
+        safely), or False if there is nothing pending / it was resolved.
+        """
+        description = self.inspectSkinRecovery()
+        if description['kind'] == 'none':
+            return False
+        if description['kind'] == 'diagnostic':
+            xbmcgui.Dialog().ok(
+                utils.getString(30010),
+                'Arctic Fuse 3 restore recovery needs attention. No files '
+                'or settings were changed.\n\n{}'.format(
+                    description['reason']))
+            return True
+
+        options = []
+        if description['continue_available']:
+            options.append(
+                'Continue the imported Arctic Fuse 3 configuration')
+        if description['rollback_available']:
+            options.append(
+                'Restore the previous Arctic Fuse 3 configuration')
+        options.append('Not now')
+        choice = xbmcgui.Dialog().select(
+            'A pending Arctic Fuse 3 restore needs your attention', options)
+        if choice == -1 or options[choice] == 'Not now':
+            return True
+
+        continuing = options[choice].startswith('Continue')
+        profile, rollback_root, pending_path = self._skinRecoveryPaths()
+        host = self._makeSkinHost()
+        self.progressBar = BackupProgressBar(False)
+        self.progressBar.create(
+            utils.getString(30010) + ' - Arctic Fuse 3 recovery',
+            'Resuming Arctic Fuse 3 restore recovery')
+        try:
+            if continuing:
+                inspection = inspect_pending_restore(
+                    profile, rollback_root, pending_path)
+                if inspection['action'] in (
+                        'resume_staging', 'restage_settings'):
+                    resume_skin_restore_staging(
+                        profile, rollback_root, pending_path, host)
+                finish_skin_restore(profile, rollback_root, pending_path, host)
+                xbmcgui.Dialog().notification(
+                    utils.getString(30010),
+                    'The imported Arctic Fuse 3 configuration was restored '
+                    'and verified.')
+            else:
+                rollback_skin_restore(
+                    profile, rollback_root, pending_path, host)
+                xbmcgui.Dialog().notification(
+                    utils.getString(30010),
+                    'Arctic Fuse 3 was restored to its previous, verified '
+                    'configuration.')
+        except (RuntimeError, OSError, ValueError) as error:
+            utils.log('AF3 recovery action stopped safely: %s' % error,
+                      xbmc.LOGWARNING)
+            xbmcgui.Dialog().ok(
+                utils.getString(30010),
+                'Arctic Fuse 3 recovery did not complete. Recovery data was '
+                'preserved.\n\n{}'.format(error))
+        finally:
+            try:
+                self.progressBar.close()
+            except Exception:
+                pass
+
+        return self.inspectSkinRecovery()['kind'] != 'none'
+
+    def checkPendingSkinRestoreBackground(self):
+        """Non-interactive: log pending recovery, never prompt or mutate it."""
+        description = self.inspectSkinRecovery()
+        if description['kind'] == 'none':
+            return False
+        utils.log(
+            'Arctic Fuse 3 restore recovery is pending; interactive '
+            'recovery through the Backup Pro program add-on is required. '
+            'Background/scheduled execution will not open a recovery '
+            'dialog or switch skins.', xbmc.LOGWARNING)
+        return True
 
     def _setupVFS(self, mode=-1, progressOverride=False):
         # set windows setting to true

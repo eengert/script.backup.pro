@@ -63,8 +63,16 @@ if("mode" in params):
     elif(params['mode'] == 'launcher'):
         mode = LAUNCHER
 
+# a pending Arctic Fuse 3 restore takes precedence over every other Program
+# action, including reading which mode was requested. If it is resolved (or
+# never existed), fall through to normal Program behavior below.
+backup = XbmcBackup()
+skinRecoveryPending = backup.resolvePendingSkinRestore()
+
 # if mode wasn't passed in as arg, get from user
-if(mode == -1):
+if(skinRecoveryPending):
+    mode = -1
+elif(mode == -1):
     # by default, Backup,Restore,Open Settings
     options = [utils.getString(30016), utils.getString(30017), utils.getString(30099)]
 
@@ -99,8 +107,6 @@ if(mode != -1):
             editor.copySimpleConfig()
 
     elif(mode == BACKUP or mode == RESTORE):
-        backup = XbmcBackup()
-
         # if mode was RESTORE
         if(mode == RESTORE and backup.remoteConfigured()):
             # get list of valid restore points

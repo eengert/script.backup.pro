@@ -100,6 +100,9 @@ class BackupScheduler:
             utils.showNotification(utils.getString(30053))
 
         backup = XbmcBackup()
+        # background/scheduled execution must never open a recovery dialog
+        # or switch skins; only log that interactive recovery is pending.
+        backup.checkPendingSkinRestoreBackground()
 
         if(backup.remoteConfigured()):
 
