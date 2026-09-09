@@ -270,6 +270,64 @@ class KodiSkinHost:
             raise KodiSkinHostError(
                 'Kodi could not stage and verify skin settings') from error
 
+    def stage_rollback_settings(self, skin, document, values):
+        """Restore exact prior settings bytes, including absent/malformed data."""
+        if skin != AF3_ID or self.active_skin() == skin:
+            raise KodiSkinHostError(
+                'target AF3 skin must be inactive while staging settings')
+        path = self._settings_path(skin)
+        if document is None:
+            if values is not None:
+                raise KodiSkinHostError(
+                    'absent rollback settings cannot have live values')
+            try:
+                if self.xbmcvfs.exists(path) and not self.xbmcvfs.delete(path):
+                    raise KodiSkinHostError(
+                        'Kodi could not remove prior-absent skin settings')
+                if self.xbmcvfs.exists(path):
+                    raise KodiSkinHostError(
+                        'prior-absent skin settings remained on disk')
+                return
+            except KodiSkinHostError:
+                raise
+            except Exception as error:
+                raise KodiSkinHostError(
+                    'Kodi could not restore absent skin settings') from error
+        if not isinstance(document, bytes) or len(document) > MAX_FILE_BYTES:
+            raise KodiSkinHostError('rollback skin settings are invalid')
+        if values is not None:
+            try:
+                checked = checked_skin_setting_values(values)
+                if not skin_settings_equal(
+                        skin_setting_values(document), checked):
+                    raise KodiSkinHostError(
+                        'rollback settings do not match expected values')
+            except SkinAdapterError as error:
+                raise KodiSkinHostError(str(error)) from error
+
+        directory = 'special://profile/addon_data/{}'.format(skin)
+        previous = None
+        write_started = False
+        try:
+            if (not self.xbmcvfs.mkdirs(directory)
+                    and not self.xbmcvfs.exists(directory)):
+                raise KodiSkinHostError(
+                    'Kodi could not create the skin settings folder')
+            if self.xbmcvfs.exists(path):
+                previous = self._read(path)
+            write_started = True
+            self._write(path, document)
+            if self._read(path) != document:
+                raise KodiSkinHostError(
+                    'Kodi changed the exact rollback settings document')
+        except KodiSkinHostError:
+            self._restore_vfs(path, previous, write_started)
+            raise
+        except Exception as error:
+            self._restore_vfs(path, previous, write_started)
+            raise KodiSkinHostError(
+                'Kodi could not stage rollback skin settings') from error
+
     def _restore_vfs(self, path, previous, write_started):
         if not write_started:
             return

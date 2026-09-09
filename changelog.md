@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.7
+
+### Added
+
+- Crash-resumable AF3 rollback coordination from every linked forward-restore
+  checkpoint after the transaction identity is durable.
+- Exact prior settings staging through Kodi VFS, including valid, absent and
+  malformed previous settings documents.
+- Previous appearance application, Skin Variables rebuild and complete helper
+  source verification before rollback state is cleared.
+
+### Security
+
+- Revalidates the rollback snapshot against its independently persisted target
+  before any rollback-side Kodi or profile effect.
+- Preserves `rollback_rebuild` state after any failed activation, settings,
+  appearance, rebuild or verification step so recovery can resume.
+
 ## Version 0.9.6
 
 ### Added

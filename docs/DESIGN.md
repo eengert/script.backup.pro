@@ -1,9 +1,10 @@
 # Backup Pro design baseline
 
 Status: AF3 capture, archive integration, restore preflight, file transaction,
-staging/completion coordinators plus Kodi staging, activation, settings,
-appearance and AF3 rebuild host operations complete; normal interactive
-runtime dispatch connected; rollback and interrupted-state recovery pending
+staging/completion/rollback coordinators plus Kodi staging, activation,
+settings, appearance and AF3 rebuild host operations complete; normal
+interactive runtime dispatch connected; recovery UX and interrupted-state
+runtime dispatch pending
 
 ## Product identity and boundaries
 
@@ -146,8 +147,9 @@ live-file copy without preflight and recovery planning.
    selector runs AF3 configuration alone through this complete path and always
    closes VFS/progress resources. The linked transaction contributes a
    separately validated undo target containing exact previous settings/helper
-   hashes plus captured appearance. Rollback/recovery actions and end-to-end
-   verification remain.
+   hashes plus captured appearance. Exact rollback completion, including
+   absent/malformed prior settings handling, is implemented and crash-
+   resumable. Recovery UX and end-to-end live Kodi verification remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.
 7. **Mac validation**: compile/package checks, disposable-profile diagnostics,

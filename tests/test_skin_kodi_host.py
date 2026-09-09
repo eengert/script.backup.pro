@@ -236,6 +236,23 @@ class KodiSkinHostTests(unittest.TestCase):
             self.host.stage_settings(AF3_ID, self.document, self.values)
         self.assertEqual({}, self.vfs.files)
 
+    def test_stage_rollback_settings_preserves_malformed_exact_bytes(self):
+        self.xbmc.skin = 'skin.estuary'
+        malformed = b'not xml but it was the exact prior file'
+        self.host.stage_rollback_settings(AF3_ID, malformed, None)
+        self.assertEqual(
+            malformed, self.vfs.files[self.host._settings_path(AF3_ID)])
+
+    def test_stage_rollback_settings_removes_prior_absent_file(self):
+        self.xbmc.skin = 'skin.estuary'
+        path = self.host._settings_path(AF3_ID)
+        self.vfs.files[path] = self.document
+        self.host.stage_rollback_settings(AF3_ID, None, None)
+        self.assertNotIn(path, self.vfs.files)
+
+        with self.assertRaisesRegex(KodiSkinHostError, 'cannot have'):
+            self.host.stage_rollback_settings(AF3_ID, None, self.values)
+
     def test_activate_skin_uses_switch_callback_and_checks_result(self):
         self.xbmc.skin = 'skin.estuary'
         self.host.activate_skin(AF3_ID)

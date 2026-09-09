@@ -52,6 +52,11 @@ class FakeHost:
             raise AssertionError('settings staged while target skin was active')
         self._event('stage_settings', skin, document, values)
 
+    def stage_rollback_settings(self, skin, document, values):
+        if self.skin == skin:
+            raise AssertionError('rollback settings staged while target active')
+        self._event('stage_rollback_settings', skin, document, values)
+
     def capture_appearance(self):
         values = {'lookandfeel.skincolors': 'Previous'}
         self._event('capture_appearance', values)
@@ -384,6 +389,156 @@ class SkinCoordinatorTests(unittest.TestCase):
                 skin_coordinator.SkinCoordinatorError, 'not ready'):
             skin_coordinator.finish_skin_restore(
                 self.profile, self.rollback, self.state, FakeHost())
+
+    def test_rollback_restores_previous_files_rebuilds_and_clears_state(self):
+        prior_settings = (
+            b'<settings><setting id="old" type="string">kept</setting>'
+            b'</settings>')
+        prior_helper = b'{"old":true}'
+        (self.profile / SETTINGS_PATH).parent.mkdir(parents=True)
+        (self.profile / SETTINGS_PATH).write_bytes(prior_settings)
+        helper = next(path for path in self.files if path != SETTINGS_PATH)
+        (self.profile / helper).parent.mkdir(parents=True)
+        (self.profile / helper).write_bytes(prior_helper)
+        host = FakeHost()
+        pending = self.stage(host)
+
+        result = skin_coordinator.rollback_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(prior_settings,
+                         (self.profile / SETTINGS_PATH).read_bytes())
+        self.assertEqual(prior_helper, (self.profile / helper).read_bytes())
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+        self.assertEqual('rolled_back', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, pending['rollback'],
+            pending['transaction_id']))
+        self.assertTrue(result['settings_verified'])
+        names = [event[0] for event in host.events]
+        rollback_stage = names.index('stage_rollback_settings')
+        activate = len(names) - 1 - names[::-1].index('activate_skin')
+        rebuild = len(names) - 1 - names[::-1].index('rebuild_skin')
+        self.assertLess(rollback_stage, activate)
+        self.assertLess(activate, rebuild)
+
+    def test_rollback_restores_absent_settings_without_live_verification(self):
+        host = FakeHost()
+        pending = self.stage(host)
+        host.events = []
+
+        result = skin_coordinator.rollback_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertFalse(result['settings_verified'])
+        rollback_event = next(
+            event for event in host.events
+            if event[0] == 'stage_rollback_settings')
+        self.assertIsNone(rollback_event[2])
+        self.assertFalse(any(
+            event[0] == 'verify_loaded_settings'
+            for event in host.events))
+        self.assertEqual('rolled_back', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, pending['rollback'],
+            pending['transaction_id']))
+
+    def test_rollback_stages_exact_malformed_previous_settings(self):
+        malformed = b'not xml but exact prior bytes'
+        (self.profile / SETTINGS_PATH).parent.mkdir(parents=True)
+        (self.profile / SETTINGS_PATH).write_bytes(malformed)
+        host = FakeHost()
+        self.stage(host)
+        host.events = []
+
+        result = skin_coordinator.rollback_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        rollback_event = next(
+            event for event in host.events
+            if event[0] == 'stage_rollback_settings')
+        self.assertEqual(malformed, rollback_event[2])
+        self.assertIsNone(rollback_event[3])
+        self.assertFalse(result['settings_verified'])
+
+    def test_rollback_rejects_target_that_no_longer_matches_snapshot(self):
+        helper = next(path for path in self.files if path != SETTINGS_PATH)
+        (self.profile / helper).parent.mkdir(parents=True)
+        (self.profile / helper).write_bytes(b'{"prior":true}')
+        host = FakeHost()
+        pending = self.stage(host)
+        damaged = dict(pending)
+        target = dict(damaged['rollback_target'])
+        target['helper_hashes'] = dict(target['helper_hashes'])
+        target['helper_hashes'][helper] = '0' * 64
+        damaged['rollback_target'] = target
+        skin_state.write_pending_state(self.state, damaged)
+        host.events = []
+
+        with self.assertRaisesRegex(
+                skin_coordinator.SkinCoordinatorError, 'no longer matches'):
+            skin_coordinator.rollback_skin_restore(
+                self.profile, self.rollback, self.state, host)
+        self.assertEqual([], host.events)
+        self.assertEqual('complete', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, pending['rollback'],
+            pending['transaction_id']))
+
+    def test_rollback_resumes_after_crash_following_file_rollback(self):
+        host = FakeHost()
+        pending = self.stage(host)
+        real_rollback = skin_coordinator.rollback_skin_transaction
+
+        def crash_after_rollback(profile, directory):
+            real_rollback(profile, directory)
+            raise KeyboardInterrupt('crash after rollback')
+
+        with mock.patch.object(
+                skin_coordinator, 'rollback_skin_transaction',
+                side_effect=crash_after_rollback):
+            with self.assertRaises(KeyboardInterrupt):
+                skin_coordinator.rollback_skin_restore(
+                    self.profile, self.rollback, self.state, host)
+
+        self.assertEqual('finish_rollback_rebuild',
+                         skin_coordinator.inspect_pending_restore(
+                             self.profile, self.rollback,
+                             self.state)['action'])
+        result = skin_coordinator.rollback_skin_restore(
+            self.profile, self.rollback, self.state, host)
+        self.assertFalse(result['settings_verified'])
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
+    def test_rollback_recovers_interrupted_forward_file_apply(self):
+        def crash(_root, _relative, _data):
+            raise KeyboardInterrupt('crash during apply')
+
+        with mock.patch.object(
+                skin_transaction, '_atomic_write', side_effect=crash):
+            with self.assertRaises(KeyboardInterrupt):
+                self.stage(FakeHost())
+        pending = skin_state.read_pending_state(self.state)
+        self.assertEqual('transaction_prepared', pending['phase'])
+
+        result = skin_coordinator.rollback_skin_restore(
+            self.profile, self.rollback, self.state, FakeHost())
+
+        self.assertFalse(result['settings_verified'])
+        self.assertEqual('rolled_back', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, pending['rollback'],
+            pending['transaction_id']))
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
+    def test_rollback_failure_keeps_durable_rollback_rebuild_state(self):
+        host = FakeHost()
+        pending = self.stage(host)
+        host.fail = 'rebuild_skin'
+        with self.assertRaises(RuntimeError):
+            skin_coordinator.rollback_skin_restore(
+                self.profile, self.rollback, self.state, host)
+        saved = skin_state.read_pending_state(self.state)
+        self.assertEqual('rollback_rebuild', saved['phase'])
+        self.assertEqual('rolled_back', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, pending['rollback'],
+            pending['transaction_id']))
 
 
 if __name__ == '__main__':

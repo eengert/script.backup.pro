@@ -53,6 +53,20 @@
 - Deferred rollback completion until schema v3 can durably describe the
   previous settings, helper files and appearance separately from the archive.
 
+## Phase 7B6b - Exact AF3 rollback coordinator
+
+- Added a lock-serialized rollback path that persists `rollback_rebuild`
+  before restoring files and resumes safely on either side of the transaction
+  status change.
+- Revalidates exact transaction snapshot bytes against the independently
+  persisted rollback target before Kodi or profile effects.
+- Restores valid, absent and malformed prior settings through Kodi VFS while
+  AF3 is inactive, then activates AF3, reapplies prior appearance, rebuilds
+  Skin Variables and verifies the complete helper-source set before clearing
+  state.
+- Added failure and crash-resume tests; absent or malformed prior settings are
+  restored exactly but reported as not live-verifiable.
+
 ## Phase 7B3b - Verified Kodi host boundary
 
 - Added a dependency-injected Kodi facade for installed add-on checks,

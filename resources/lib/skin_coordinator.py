@@ -2,9 +2,9 @@ from __future__ import unicode_literals
 
 """Crash-ordered AF3 restore staging independent of Kodi presentation code."""
 
+import hashlib
 import os
 import stat
-import hashlib
 from contextlib import contextmanager
 
 from .skin_adapter import AF3_ID, SKIN_VARIABLES_ID, validate_snapshot_files
@@ -24,6 +24,8 @@ from .skin_transaction import (
     pending_skin_transactions,
     read_current_managed_files,
     read_skin_rollback_snapshot,
+    recover_pending_transactions,
+    rollback_skin_transaction,
     skin_transaction_status,
 )
 
@@ -217,6 +219,13 @@ def inspect_pending_restore(profile_path, rollback_root, pending_path):
         'rebuild': {
             'complete': 'finish_rebuild',
         },
+        'rollback_rebuild': {
+            'prepared': 'rollback_transaction',
+            'applying': 'rollback_transaction',
+            'rollback_failed': 'rollback_transaction',
+            'complete': 'rollback_transaction',
+            'rolled_back': 'finish_rollback_rebuild',
+        },
     }
     action = actions.get(phase, {}).get(status)
     if action is None:
@@ -273,4 +282,105 @@ def finish_skin_restore(profile_path, rollback_root, pending_path, host):
             'setting_count': len(pending['skin_settings']),
             'helper_file_count': len(pending['helper_hashes']),
             'appearance_count': len(pending['skin_config']['appearance']),
+        }
+
+
+def rollback_skin_restore(profile_path, rollback_root, pending_path, host):
+    """Restore and verify the exact pre-imported AF3 configuration."""
+    with _operation_lock(pending_path):
+        action = inspect_pending_restore(
+            profile_path, rollback_root, pending_path)
+        if (action['action'] in (
+                'resume_staging', 'restage_settings', 'finish_rebuild')
+                or (action['action'] == 'rollback_transaction'
+                    and action['phase'] != 'rollback_rebuild')):
+            pending = read_pending_state(pending_path)
+            pending = write_pending_state(
+                pending_path,
+                advance_pending_restore(pending, 'rollback_rebuild'))
+            action = inspect_pending_restore(
+                profile_path, rollback_root, pending_path)
+        elif action['action'] not in (
+                'rollback_transaction', 'finish_rollback_rebuild'):
+            raise SkinCoordinatorError(
+                'pending skin restore cannot be rolled back safely')
+
+        pending = read_pending_state(pending_path)
+        previous_files = read_skin_rollback_snapshot(
+            profile_path, rollback_root, pending['rollback'],
+            pending['transaction_id'])
+        target = pending['rollback_target']
+        if build_rollback_target(
+                previous_files, target['appearance']) != target:
+            raise SkinCoordinatorError(
+                'AF3 rollback snapshot no longer matches pending state')
+
+        _call(host, 'ensure_dependencies', AF3_ID, SKIN_VARIABLES_ID)
+        _progress(host, 10, 'Stopping playback')
+        _call(host, 'stop_playback')
+        if _call(host, 'is_playing'):
+            raise SkinCoordinatorError(
+                'playback did not stop before skin rollback')
+        _progress(host, 20, 'Activating a safe skin')
+        _call(host, 'ensure_inactive', AF3_ID)
+        if _call(host, 'active_skin') == AF3_ID:
+            raise SkinCoordinatorError('target skin is still active')
+
+        if action['action'] == 'rollback_transaction':
+            status = skin_transaction_status(
+                profile_path, rollback_root, pending['rollback'],
+                pending['transaction_id'])
+            _progress(host, 35, 'Restoring previous AF3 files')
+            if status == 'complete':
+                rollback_skin_transaction(
+                    profile_path, pending['rollback'])
+            else:
+                recovered = recover_pending_transactions(
+                    profile_path, rollback_root)
+                exact = os.path.abspath(pending['rollback'])
+                if exact not in {os.path.abspath(path) for path in recovered}:
+                    raise SkinCoordinatorError(
+                        'linked AF3 transaction was not recovered')
+            status = skin_transaction_status(
+                profile_path, rollback_root, pending['rollback'],
+                pending['transaction_id'])
+            if status != 'rolled_back':
+                raise SkinCoordinatorError(
+                    'AF3 file transaction did not roll back')
+
+        _progress(host, 50, 'Staging previous AF3 settings through Kodi')
+        settings_document = previous_files.get(SETTINGS_PATH)
+        _call(host, 'stage_rollback_settings', AF3_ID, settings_document,
+              target['skin_settings'])
+
+        _progress(host, 65, 'Activating previous Arctic Fuse 3 state')
+        _call(host, 'activate_skin', AF3_ID)
+        if _call(host, 'active_skin') != AF3_ID:
+            raise SkinCoordinatorError('rolled-back AF3 skin is not active')
+        if target['skin_settings'] is not None:
+            _call(host, 'verify_loaded_settings', AF3_ID,
+                  target['skin_settings'])
+        _call(host, 'apply_appearance', target['appearance'])
+
+        _progress(host, 75, 'Rebuilding previous AF3 menus and widgets')
+        rebuild_state = dict(pending)
+        rebuild_state['helper_hashes'] = target['helper_hashes']
+        _call(host, 'rebuild_skin', AF3_ID, rebuild_state)
+
+        _progress(host, 90, 'Verifying previous AF3 configuration')
+        if _call(host, 'active_skin') != AF3_ID:
+            raise SkinCoordinatorError('AF3 changed during rollback rebuild')
+        if target['skin_settings'] is not None:
+            _call(host, 'verify_loaded_settings', AF3_ID,
+                  target['skin_settings'])
+        _verify_helper_sources(profile_path, target['helper_hashes'])
+        clear_pending_state(pending_path, pending)
+        _progress(host, 100, 'AF3 rollback complete')
+        return {
+            'skin_id': AF3_ID,
+            'setting_count': (len(target['skin_settings'])
+                              if target['skin_settings'] is not None else 0),
+            'settings_verified': target['skin_settings'] is not None,
+            'helper_file_count': len(target['helper_hashes']),
+            'appearance_count': len(target['appearance']),
         }
