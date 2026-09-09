@@ -194,6 +194,23 @@ class KodiSkinHost:
                 raise KodiSkinHostError(
                     'Kodi did not keep appearance setting ' + setting)
 
+    def capture_appearance(self):
+        values = {}
+        for setting in (
+                'lookandfeel.skintheme', 'lookandfeel.skincolors',
+                'lookandfeel.font', 'lookandfeel.skinzoom'):
+            try:
+                result = self._rpc(
+                    'Settings.GetSettingValue', setting=setting)
+            except KodiSkinHostError:
+                continue
+            if isinstance(result, dict) and result.get('value') is not None:
+                values[setting] = result['value']
+        try:
+            return checked_appearance(values)
+        except SkinAdapterError as error:
+            raise KodiSkinHostError(str(error)) from error
+
     @staticmethod
     def _settings_path(skin):
         return 'special://profile/addon_data/{}/settings.xml'.format(skin)

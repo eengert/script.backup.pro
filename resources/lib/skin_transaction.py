@@ -174,7 +174,7 @@ def _remove_files(root, paths):
             raise SkinTransactionError('cannot remove managed restore file') from error
 
 
-def _restore_previous(profile, directory, journal):
+def _load_previous(directory, journal):
     entries = journal.get('previous_entries')
     targets = journal.get('target_paths')
     if (not isinstance(entries, list) or not isinstance(targets, list)
@@ -211,6 +211,12 @@ def _restore_previous(profile, directory, journal):
         previous[relative] = data
     for relative in targets:
         managed_source_paths({relative: b''}, AF3_ID)
+    return previous
+
+
+def _restore_previous(profile, directory, journal):
+    previous = _load_previous(directory, journal)
+    targets = journal.get('target_paths')
     current = current_managed_paths(profile, AF3_ID)
     _remove_files(profile, set(current) | set(targets))
     for relative, data in sorted(previous.items()):
@@ -315,6 +321,16 @@ def skin_transaction_status(
                       'rollback_failed', 'complete', 'rolled_back'):
         raise SkinTransactionError('invalid transaction status')
     return status
+
+
+def read_skin_rollback_snapshot(
+        profile_path, rollback_root, rollback_directory, transaction_id):
+    """Return verified pre-restore bytes for one exact linked transaction."""
+    skin_transaction_status(
+        profile_path, rollback_root, rollback_directory, transaction_id)
+    directory = _safe_root(rollback_directory)
+    journal = _read_journal(directory)
+    return _load_previous(directory, journal)
 
 
 def rollback_skin_transaction(profile_path, rollback_directory):

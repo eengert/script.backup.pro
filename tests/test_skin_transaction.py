@@ -100,6 +100,10 @@ class SkinTransactionTests(unittest.TestCase):
         )], observations)
         self.assertEqual('complete', skin_transaction.skin_transaction_status(
             self.profile, self.rollback, directory, transaction_id))
+        self.assertEqual(
+            {SETTINGS: b'<settings />'},
+            skin_transaction.read_skin_rollback_snapshot(
+                self.profile, self.rollback, directory, transaction_id))
 
     def test_failed_handoff_leaves_prepared_recovery_without_mutation(self):
         original = self.write(SETTINGS, b'<settings />')

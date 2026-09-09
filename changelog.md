@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.6
+
+### Added
+
+- Pending-state schema v3 with an independently validated rollback target.
+- Exact pre-restore settings, helper hashes and appearance are durably linked
+  to the confined transaction path and UUID before profile mutation.
+
 ## Version 0.9.5
 
 ### Added

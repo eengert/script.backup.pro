@@ -144,7 +144,9 @@ live-file copy without preflight and recovery planning.
    Kodi activation, settings/appearance verification and token-confirmed AF3
    rebuild with generated-XML checks are implemented. The interactive restore
    selector runs AF3 configuration alone through this complete path and always
-   closes VFS/progress resources. Rollback/recovery actions and end-to-end
+   closes VFS/progress resources. The linked transaction contributes a
+   separately validated undo target containing exact previous settings/helper
+   hashes plus captured appearance. Rollback/recovery actions and end-to-end
    verification remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.

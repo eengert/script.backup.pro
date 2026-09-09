@@ -1,5 +1,15 @@
 # Backup Pro work log
 
+## Phase 7B6a - Durable rollback target
+
+- Upgraded pending state to schema v3 with a separately validated undo target
+  that is not constrained by the incoming archive manifest.
+- Reads the exact rollback snapshot by confined path and transaction UUID while
+  its journal is `prepared`, before any profile mutation.
+- Stores prior typed settings when valid, exact helper byte hashes and captured
+  Kodi appearance; malformed or absent prior settings remain explicitly
+  representable for disk-only recovery.
+
 ## Phase 7B5 - Interactive restore runtime
 
 - Routes an explicitly selected `skin_config` group through verified preflight,

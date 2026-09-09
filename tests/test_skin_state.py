@@ -11,6 +11,7 @@ from tests.test_skin_restore import TRANSACTION_ID
 from resources.lib.skin_restore import (
     advance_pending_restore,
     build_pending_restore,
+    build_rollback_target,
 )
 
 
@@ -24,7 +25,8 @@ class SkinStateTests(unittest.TestCase):
             manifest, payloads, '20260908120000.zip')
         transaction = advance_pending_restore(
             prepared, 'transaction_prepared', '/rollback/one',
-            TRANSACTION_ID)
+            TRANSACTION_ID,
+            build_rollback_target({}, {}))
         self.record = advance_pending_restore(transaction, 'files_applied')
 
     def test_atomic_write_read_and_verified_clear(self):

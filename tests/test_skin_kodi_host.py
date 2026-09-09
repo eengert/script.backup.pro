@@ -268,6 +268,14 @@ class KodiSkinHostTests(unittest.TestCase):
         self.assertEqual('Dark', self.xbmc.appearance[
             'lookandfeel.skincolors'])
 
+    def test_capture_appearance_keeps_only_exposed_values(self):
+        self.xbmc.appearance = {
+            'lookandfeel.skincolors': 'Previous',
+            'lookandfeel.font': 'Default',
+        }
+        self.assertEqual(self.xbmc.appearance,
+                         self.host.capture_appearance())
+
     def _complete_rebuild(self, create_generated=True):
         def builtin(command, _wait):
             if not command.startswith('RunScript('):

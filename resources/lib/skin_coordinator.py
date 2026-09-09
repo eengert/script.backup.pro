@@ -11,6 +11,7 @@ from .skin_adapter import AF3_ID, SKIN_VARIABLES_ID, validate_snapshot_files
 from .skin_restore import (
     SETTINGS_PATH,
     advance_pending_restore,
+    build_rollback_target,
     build_pending_restore,
 )
 from .skin_state import (
@@ -22,6 +23,7 @@ from .skin_transaction import (
     apply_skin_snapshot,
     pending_skin_transactions,
     read_current_managed_files,
+    read_skin_rollback_snapshot,
     skin_transaction_status,
 )
 
@@ -110,6 +112,7 @@ def _stage_skin_restore_locked(manifest, files, restore_point, profile_path,
     private_files = {path: bytes(data) for path, data in checked_files.items()}
     pending = build_pending_restore(manifest, private_files, restore_point)
     _call(host, 'ensure_dependencies', AF3_ID, SKIN_VARIABLES_ID)
+    previous_appearance = _call(host, 'capture_appearance')
     pending = write_pending_state(pending_path, pending)
     _progress(host, 10, 'Stopping playback')
     _call(host, 'stop_playback')
@@ -129,9 +132,12 @@ def _stage_skin_restore_locked(manifest, files, restore_point, profile_path,
     state = {'pending': pending}
 
     def transaction_prepared(directory, transaction_id):
+        previous_files = read_skin_rollback_snapshot(
+            profile_path, rollback_root, directory, transaction_id)
         updated = advance_pending_restore(
             state['pending'], 'transaction_prepared', directory,
-            transaction_id)
+            transaction_id,
+            build_rollback_target(previous_files, previous_appearance))
         state['pending'] = write_pending_state(pending_path, updated)
 
     _progress(host, 40, 'Saving rollback and applying AF3 files')

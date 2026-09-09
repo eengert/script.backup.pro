@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +51,11 @@ class FakeHost:
         if self.skin == skin:
             raise AssertionError('settings staged while target skin was active')
         self._event('stage_settings', skin, document, values)
+
+    def capture_appearance(self):
+        values = {'lookandfeel.skincolors': 'Previous'}
+        self._event('capture_appearance', values)
+        return values
 
     def activate_skin(self, skin):
         self._event('activate_skin', skin)
@@ -109,6 +115,31 @@ class SkinCoordinatorTests(unittest.TestCase):
                          skin_coordinator.inspect_pending_restore(
                              self.profile, self.rollback,
                              self.state)['action'])
+
+    def test_stage_binds_exact_previous_files_and_appearance_for_undo(self):
+        prior_settings = (
+            b'<settings><setting id="old" type="string">kept</setting>'
+            b'</settings>')
+        prior_helper = b'{"old":true}'
+        settings_path = self.profile / SETTINGS_PATH
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_bytes(prior_settings)
+        helper = next(path for path in self.files if path != SETTINGS_PATH)
+        helper_path = self.profile / helper
+        helper_path.parent.mkdir(parents=True)
+        helper_path.write_bytes(prior_helper)
+
+        pending = self.stage(FakeHost())
+        target = pending['rollback_target']
+        self.assertEqual([{
+            'id': 'old', 'type': 'string', 'value': 'kept',
+        }], target['skin_settings'])
+        self.assertEqual(
+            hashlib.sha256(prior_helper).hexdigest(),
+            target['helper_hashes'][helper])
+        self.assertEqual(
+            {'lookandfeel.skincolors': 'Previous'},
+            target['appearance'])
 
     def test_existing_pending_blocks_before_host_or_profile_effects(self):
         prepared = build_pending_restore(

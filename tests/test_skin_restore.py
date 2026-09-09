@@ -123,6 +123,7 @@ class SkinRestoreTests(unittest.TestCase):
         self.assertEqual({
             HELPER: hashlib.sha256(payloads[HELPER]).hexdigest(),
         }, record['helper_hashes'])
+        self.assertIsNone(record['rollback_target'])
 
         damaged = dict(record)
         damaged['helper_hashes'] = {HELPER: '0' * 64}
@@ -161,13 +162,18 @@ class SkinRestoreTests(unittest.TestCase):
 
         transaction = skin_restore.advance_pending_restore(
             prepared, 'transaction_prepared', '/rollback/one',
-            TRANSACTION_ID)
+            TRANSACTION_ID, skin_restore.build_rollback_target({
+                SETTINGS: payloads[SETTINGS],
+                HELPER: b'{"old":true}',
+            }, {'lookandfeel.skincolors': 'Light'}))
         applied = skin_restore.advance_pending_restore(
             transaction, 'files_applied')
         rebuilding = skin_restore.advance_pending_restore(applied, 'rebuild')
         recovering = skin_restore.advance_pending_restore(
             rebuilding, 'rollback_rebuild')
         self.assertEqual('/rollback/one', recovering['rollback'])
+        self.assertEqual('Light', recovering['rollback_target'][
+            'appearance']['lookandfeel.skincolors'])
 
         with self.assertRaises(skin_restore.SkinRestoreError):
             skin_restore.advance_pending_restore(
@@ -178,6 +184,23 @@ class SkinRestoreTests(unittest.TestCase):
                 'd937a8f5-130e-4a32-9df5-688632ee64ed')
         with self.assertRaises(skin_restore.SkinRestoreError):
             skin_restore.advance_pending_restore(recovering, 'rebuild')
+
+    def test_rollback_target_is_independent_from_archive_expectations(self):
+        target = skin_restore.build_rollback_target({
+            SETTINGS: b'<settings><setting id="old">yes</setting></settings>',
+            HELPER: b'{broken prior data',
+        }, {'lookandfeel.skincolors': 'Light'})
+        self.assertEqual([{
+            'id': 'old', 'type': 'string', 'value': 'yes',
+        }], target['skin_settings'])
+        self.assertEqual(
+            hashlib.sha256(b'{broken prior data').hexdigest(),
+            target['helper_hashes'][HELPER])
+
+        target = skin_restore.build_rollback_target({
+            SETTINGS: b'not xml',
+        }, {})
+        self.assertIsNone(target['skin_settings'])
 
 if __name__ == '__main__':
     unittest.main()

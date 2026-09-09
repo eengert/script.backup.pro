@@ -11,7 +11,7 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.9.5 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
+Version 0.9.6 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
 cache-exclusion and verified-archive foundation. It captures Kodi's live typed
 skin settings and only the proven Script Skin Variables source JSON needed for
 rebuilding AF3. Managed source paths are omitted from the generic Add-on Data
@@ -43,6 +43,11 @@ verified preflight, staging, interactive skin-confirmation and completion path;
 every restore closes its VFS/progress resources. Recovery-focused menus,
 rollback completion, final UX integration and artwork remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
+
+Pending restore schema v3 also binds the exact pre-restore settings, helper
+hashes and appearance captured from the linked rollback transaction. This
+allows Undo to verify the previous configuration rather than incorrectly
+comparing it with the imported archive.
 
 ## Attribution
 
