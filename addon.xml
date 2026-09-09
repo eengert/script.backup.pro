@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="script.backup.pro"
-    name="Backup Pro" version="0.9.4" provider-name="robweber, eengert">
+    name="Backup Pro" version="0.9.5" provider-name="robweber, eengert">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
     <import addon="script.module.dateutil" version="2.8.0" />
@@ -23,8 +23,8 @@
 		<screenshot>resources/images/screenshot3.jpg</screenshot>
 		<screenshot>resources/images/screenshot4.jpg</screenshot>
     </assets>
-    <news>Version 0.9.4
-Adds verified Arctic Fuse 3 menu, widget and view rebuilding.
+    <news>Version 0.9.5
+Connects interactive verified Arctic Fuse 3 restore to the Backup Pro runtime.
 </news>
     <summary lang="ar_SA">إنسخ إحتياطياً قاعده بيانات إكس بى إم سى وملفات اﻹعدادات فى حاله وقوع إنهيار مع إمكانيه اﻹسترجاع</summary>
     <summary lang="bg_BG">Добавката може да създава резервни копия и възстановява базата данни и настройките на Kodi, в случай на срив или повреда на файловете.</summary>

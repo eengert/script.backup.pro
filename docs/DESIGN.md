@@ -2,7 +2,8 @@
 
 Status: AF3 capture, archive integration, restore preflight, file transaction,
 staging/completion coordinators plus Kodi staging, activation, settings,
-appearance and AF3 rebuild host operations complete; runtime dispatch pending
+appearance and AF3 rebuild host operations complete; normal interactive
+runtime dispatch connected; rollback and interrupted-state recovery pending
 
 ## Product identity and boundaries
 
@@ -141,8 +142,10 @@ live-file copy without preflight and recovery planning.
    VFS read-back postconditions. Normal completion clears pending state only
    after activation, settings, appearance, rebuild and helper-source checks.
    Kodi activation, settings/appearance verification and token-confirmed AF3
-   rebuild with generated-XML checks are implemented. Runtime dispatch,
-   rollback/recovery and end-to-end verification remain.
+   rebuild with generated-XML checks are implemented. The interactive restore
+   selector runs AF3 configuration alone through this complete path and always
+   closes VFS/progress resources. Rollback/recovery actions and end-to-end
+   verification remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.
 7. **Mac validation**: compile/package checks, disposable-profile diagnostics,

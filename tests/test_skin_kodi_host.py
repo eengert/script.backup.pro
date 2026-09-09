@@ -269,12 +269,11 @@ class KodiSkinHostTests(unittest.TestCase):
             'lookandfeel.skincolors'])
 
     def _complete_rebuild(self, create_generated=True):
-        plan_path = ('special://profile/addon_data/script.backup.pro/'
-                     'rebuild.json')
-
         def builtin(command, _wait):
             if not command.startswith('RunScript('):
                 return
+            plan_path = command.split(
+                'run_executebuiltin=', 1)[1].split(',', 1)[0]
             plan = json.loads(self.vfs.files[plan_path].decode('utf-8'))
             action = plan['actions'][-1]
             token = action.split(',')[1]
@@ -301,17 +300,24 @@ class KodiSkinHostTests(unittest.TestCase):
         self.assertEqual(('ReloadSkin()', True), self.xbmc.builtins[-1])
         self.assertNotIn(
             'BackupPro.RebuildComplete', self.gui.window.properties)
-        self.assertNotIn(
-            'special://profile/addon_data/script.backup.pro/rebuild.json',
-            self.vfs.files)
+        self.assertFalse(any(
+            path.startswith(
+                'special://profile/addon_data/script.backup.pro/rebuild-')
+            for path in self.vfs.files))
         self.assertIn(
             'SkinVariables.ShortcutsNode.Reload',
             self.gui.window.properties)
 
     def test_rebuild_rejects_missing_generated_includes(self):
+        selector_path = os.path.join(
+            self.skin_path, '1080i',
+            'script-skinvariables-skinusers.xml')
+        previous = b'<includes><include file="previous.xml" /></includes>'
+        self.vfs.files[selector_path] = previous
         self._complete_rebuild(create_generated=False)
         with self.assertRaisesRegex(KodiSkinHostError, 'missing'):
             self.host.rebuild_skin(AF3_ID, {'helper_hashes': {}})
+        self.assertEqual(previous, self.vfs.files[selector_path])
 
     def test_rebuild_rejects_invalid_af3_profile_slug(self):
         self.xbmc.skin_user = '../unsafe'
@@ -328,6 +334,21 @@ class KodiSkinHostTests(unittest.TestCase):
         self.assertIn(
             b'script-skinvariables-generator-includes-user-ABC123.xml',
             selector)
+
+    def test_rebuild_clears_stale_profile_selector_for_default(self):
+        selector_path = os.path.join(
+            self.skin_path, '1080i',
+            'script-skinvariables-skinusers.xml')
+        self.vfs.files[selector_path] = (
+            b'<includes><include file="old-user.xml" /></includes>')
+        self._complete_rebuild()
+        self.host.rebuild_skin(AF3_ID, {'helper_hashes': {}})
+        self.assertNotIn(b'old-user.xml', self.vfs.files[selector_path])
+
+    def test_progress_ignores_presentation_failure(self):
+        self.host.progress_callback = lambda *_args: (_ for _ in ()).throw(
+            RuntimeError('dialog closed'))
+        self.host.progress(70, 'Waiting for AF3')
 
 
 if __name__ == '__main__':

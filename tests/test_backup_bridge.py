@@ -34,7 +34,7 @@ def install_kodi_stubs():
 
         def getAddonInfo(self, name):
             return {'path': '.', 'profile': '/profile/',
-                    'version': '0.9.4'}.get(name, '')
+                    'version': '0.9.5'}.get(name, '')
 
         def getLocalizedString(self, string_id):
             return str(string_id)
@@ -96,6 +96,8 @@ from resources.lib.archive import (  # noqa: E402
 from resources.lib.backup import FileManager, XbmcBackup  # noqa: E402
 from resources.lib import backup as backup_module  # noqa: E402
 from tests.test_planning import FakeVfs  # noqa: E402
+from tests.test_skin_coordinator import FakeHost  # noqa: E402
+from tests.test_skin_restore import fixture as skin_fixture  # noqa: E402
 
 
 class BackupBridgeTests(unittest.TestCase):
@@ -401,6 +403,75 @@ class BackupBridgeTests(unittest.TestCase):
             self.assertEqual(['/fresh-backup/'], removed)
         finally:
             backup_module.utils.showNotification = original_notification
+
+    def test_restore_wrapper_always_closes_after_failure(self):
+        instance = object.__new__(XbmcBackup)
+        closed = []
+        instance._runRestore = lambda *_args: (_ for _ in ()).throw(
+            IOError('simulated restore failure'))
+        instance._closeVFS = lambda: closed.append(True)
+        with self.assertRaises(IOError):
+            instance.restore()
+        self.assertEqual([True], closed)
+
+    def test_runtime_skin_handler_stages_finishes_and_reports(self):
+        manifest, files = skin_fixture()
+        original_data_dir = backup_module.utils.data_dir
+        original_translate = backup_module.xbmcvfs.translatePath
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        messages = []
+
+        class Dialog:
+            def yesno(self, title, message, **_kwargs):
+                messages.append(('yesno', title, message))
+                return True
+
+            def ok(self, title, message):
+                messages.append(('ok', title, message))
+                return True
+
+            def notification(self, title, message, *_args):
+                messages.append(('notification', title, message))
+
+        class Progress:
+            def checkCancel(self):
+                return False
+
+            def updateProgress(self, _percent, _message=None):
+                pass
+
+            def close(self):
+                pass
+
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                profile = os.path.join(directory, 'profile')
+                data = os.path.join(directory, 'addon-data')
+                os.makedirs(profile)
+                backup_module.utils.data_dir = lambda: data + '/'
+                backup_module.xbmcvfs.translatePath = lambda path: (
+                    profile + '/' if path == 'special://profile/' else path)
+                backup_module.xbmcgui.Dialog = Dialog
+
+                instance = object.__new__(XbmcBackup)
+                instance.restore_point = '20260908120000.zip'
+                instance.progressBar = Progress()
+                instance._readRestoreBytes = lambda path: files[
+                    path.split('/', 1)[1]]
+                instance._makeSkinHost = FakeHost
+
+                self.assertTrue(instance._restoreSkinConfig(manifest))
+                self.assertFalse(os.path.exists(os.path.join(
+                    data, 'pending-skin-restore.json')))
+                self.assertTrue(any(item[0] == 'notification'
+                                    for item in messages))
+        finally:
+            backup_module.utils.data_dir = original_data_dir
+            backup_module.xbmcvfs.translatePath = original_translate
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
 
 if __name__ == '__main__':

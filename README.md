@@ -11,7 +11,7 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.9.4 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
+Version 0.9.5 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
 cache-exclusion and verified-archive foundation. It captures Kodi's live typed
 skin settings and only the proven Script Skin Variables source JSON needed for
 rebuilding AF3. Managed source paths are omitted from the generic Add-on Data
@@ -38,7 +38,10 @@ and live-setting equality, and set/read-back verification for every captured
 appearance value. AF3 rebuilding now uses Skin Variables' public routes with a
 verified action plan and unique completion token, validates generated include
 XML before and after a synchronous skin reload, and refreshes restored node
-caches. Runtime dispatch, final UX integration and artwork remain planned. See
+caches. The restore selector now routes AF3 configuration by itself through the
+verified preflight, staging, interactive skin-confirmation and completion path;
+every restore closes its VFS/progress resources. Recovery-focused menus,
+rollback completion, final UX integration and artwork remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
 
 ## Attribution

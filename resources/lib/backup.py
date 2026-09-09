@@ -31,10 +31,20 @@ from resources.lib.planning import (
 from resources.lib.skin_adapter import (
     AF3_ID,
     APPEARANCE_SETTINGS,
+    MAX_FILE_BYTES,
     SKIN_VARIABLES_ID,
     SkinAdapterError,
     capture_af3_snapshot,
     managed_source_paths,
+)
+from resources.lib.skin_coordinator import (
+    finish_skin_restore,
+    stage_skin_restore,
+)
+from resources.lib.skin_kodi_host import KodiSkinHost
+from resources.lib.skin_restore import (
+    load_skin_snapshot,
+    skin_restore_preview,
 )
 
 
@@ -88,6 +98,7 @@ class XbmcBackup:
         self._skin_stage_path = None
         self._skin_snapshot_metadata = None
         self._skin_managed_exclusions = []
+        self._skin_monitor = xbmc.Monitor()
 
         self.configureRemote()
         utils.log(utils.getString(30046))
@@ -296,6 +307,12 @@ class XbmcBackup:
         return False
 
     def restore(self, progressOverride=False, selectedSets=None):
+        try:
+            return self._runRestore(progressOverride, selectedSets)
+        finally:
+            self._closeVFS()
+
+    def _runRestore(self, progressOverride=False, selectedSets=None):
         shouldContinue = self._setupVFS(self.Restore, progressOverride)
 
         if(shouldContinue):
@@ -354,33 +371,6 @@ class XbmcBackup:
             allFiles = []
             fileManager = FileManager(self.remote_vfs)
 
-            # check for the existance of an advancedsettings file
-            if(self.remote_vfs.exists(self.remote_vfs.root_path + "config/advancedsettings.xml") and not self.skip_advanced):
-                # let the user know there is an advanced settings file present
-                restartXbmc = xbmcgui.Dialog().yesno(utils.getString(30038), "%s\n%s\n%s" % (utils.getString(30039), utils.getString(30040), utils.getString(30041)))
-
-                if(restartXbmc):
-                    # add only this file to the file list
-                    self.transferSize = 1
-                    self.transferLeft = 1
-                    fileManager.addFile(self.remote_vfs.root_path + "config/advancedsettings.xml")
-                    self._copyFiles(fileManager.getFiles(), self.remote_vfs, self.xbmc_vfs)
-
-                    # let the service know to resume this backup on startup
-                    self._createResumeBackupFile()
-
-                    # do not continue running
-                    if(xbmcgui.Dialog().yesno(utils.getString(30077), utils.getString(30078), autoclose=15000)):
-                        xbmc.executebuiltin('Quit')
-
-                    return
-
-            # check if settings should be restored from this backup
-            restoreSettings = not utils.getSettingBool('always_prompt_restore_settings')
-            if(not restoreSettings and 'system_settings' in valFile):
-                # prompt the user to restore settings yes/no
-                restoreSettings = xbmcgui.Dialog().yesno(utils.getString(30149), utils.getString(30150))
-
             # use a multiselect dialog to select sets to restore
             restoreSets = [n['name'] for n in valFile['directories']]
 
@@ -390,16 +380,57 @@ class XbmcBackup:
             else:
                 selectedSets = [restoreSets.index(n) for n in selectedSets if n in restoreSets]  # if set name not found just skip it
 
+            restoreSettings = False
             if(selectedSets is not None):
-                if any(restoreSets[index].casefold() == 'skin_config'
-                       for index in selectedSets):
-                    utils.log(
-                        'AF3 restore requires the transactional restore handler',
-                        xbmc.LOGWARNING)
-                    xbmcgui.Dialog().ok(
-                        utils.getString(30010),
-                        'Arctic Fuse 3 restore is not available in this development build.')
-                    return False
+                skin_indexes = [
+                    index for index in selectedSets
+                    if restoreSets[index].casefold() == 'skin_config'
+                ]
+                if skin_indexes:
+                    if len(selectedSets) != 1 or len(skin_indexes) != 1:
+                        xbmcgui.Dialog().ok(
+                            utils.getString(30010),
+                            'Restore Arctic Fuse 3 configuration by itself. '
+                            'Other groups can be restored in a separate run.')
+                        return False
+                    result = self._restoreSkinConfig(valFile)
+                    self._cleanupRestoreArchive()
+                    return result
+
+                selected_names = {
+                    restoreSets[index].casefold() for index in selectedSets
+                }
+
+                # advancedsettings.xml requires a restart, but only when the
+                # user actually selected the Config group.
+                advanced = (self.remote_vfs.root_path
+                            + 'config/advancedsettings.xml')
+                if ('config' in selected_names
+                        and self.remote_vfs.exists(advanced)
+                        and not self.skip_advanced):
+                    restartXbmc = xbmcgui.Dialog().yesno(
+                        utils.getString(30038), '%s\n%s\n%s' % (
+                            utils.getString(30039), utils.getString(30040),
+                            utils.getString(30041)))
+                    if restartXbmc:
+                        self.transferSize = 1
+                        self.transferLeft = 1
+                        fileManager.addFile(advanced)
+                        self._copyFiles(
+                            fileManager.getFiles(), self.remote_vfs,
+                            self.xbmc_vfs)
+                        self._createResumeBackupFile()
+                        if xbmcgui.Dialog().yesno(
+                                utils.getString(30077),
+                                utils.getString(30078), autoclose=15000):
+                            xbmc.executebuiltin('Quit')
+                        return
+
+                restoreSettings = not utils.getSettingBool(
+                    'always_prompt_restore_settings')
+                if (not restoreSettings and 'system_settings' in valFile):
+                    restoreSettings = xbmcgui.Dialog().yesno(
+                        utils.getString(30149), utils.getString(30150))
 
                 # go through each of the directories in the backup and write them to the correct location
                 for index in selectedSets:
@@ -434,12 +465,7 @@ class XbmcBackup:
 
             self.progressBar.updateProgress(99, "Clean up operations .....")
 
-            if(self.restore_point.split('.')[-1] == 'zip'):
-                # delete the zip file and the extracted directory
-                self.xbmc_vfs.rmfile(os.path.join(self.ZIP_TEMP_PATH, self.restore_point))
-                xbmc.sleep(1000)
-                self.xbmc_vfs.rmdir(self.remote_vfs.clean_path(os.path.join(self.ZIP_TEMP_PATH, self.restore_point.split(".")[0])))
-                xbmc.sleep(1000)
+            self._cleanupRestoreArchive()
 
             # call update addons to refresh everything
             xbmc.executebuiltin('UpdateLocalAddons')
@@ -447,6 +473,171 @@ class XbmcBackup:
             # notify user that restart is recommended
             if(xbmcgui.Dialog().yesno(utils.getString(30077), utils.getString(30078), autoclose=15000)):
                 xbmc.executebuiltin('Quit')
+
+    def _cleanupRestoreArchive(self):
+        if self.restore_point.split('.')[-1] != 'zip':
+            return
+        self.xbmc_vfs.rmfile(os.path.join(
+            self.ZIP_TEMP_PATH, self.restore_point))
+        xbmc.sleep(1000)
+        self.xbmc_vfs.rmdir(self.remote_vfs.clean_path(os.path.join(
+            self.ZIP_TEMP_PATH, self.restore_point.split('.')[0])))
+        xbmc.sleep(1000)
+
+    def _skinWait(self, seconds):
+        if self._skin_monitor.waitForAbort(seconds):
+            raise RuntimeError('Kodi is closing; the restore remains pending')
+        if (hasattr(self, '_skin_profile')
+                and os.path.abspath(xbmcvfs.translatePath(
+                    'special://profile/')) != self._skin_profile):
+            raise RuntimeError(
+                'Kodi profile changed; the restore remains pending')
+
+    @staticmethod
+    def _skinConfirmationActive():
+        for condition in ('Window.IsActive(yesnodialog)',
+                          'Window.IsActive(10100)'):
+            try:
+                if xbmc.getCondVisibility(condition):
+                    return True
+            except RuntimeError:
+                continue
+        return False
+
+    def _switchSkin(self, skin):
+        if xbmc.getSkinDir() == skin:
+            return
+        try:
+            self.progressBar.close()
+        except Exception:
+            pass
+        try:
+            xbmcgui.Dialog().notification(
+                utils.getString(30010),
+                'Choose Yes when Kodi asks whether to keep {}.'.format(skin),
+                xbmcgui.NOTIFICATION_INFO, 12000)
+        except Exception:
+            pass
+        xbmc.executebuiltin('ActivateWindow(home)')
+        self._skinWait(0.5)
+        if self._skinRpc(
+                'Settings.SetSettingValue', setting='lookandfeel.skin',
+                value=skin) is not True:
+            raise RuntimeError('Kodi refused to change skins')
+        confirmation_seen = False
+        confirmed_reads = 0
+        active_reads = 0
+        for _attempt in range(96):
+            self._skinWait(0.25)
+            if xbmc.getSkinDir() != skin:
+                active_reads = 0
+                confirmed_reads = 0
+                continue
+            active_reads += 1
+            if self._skinConfirmationActive():
+                confirmation_seen = True
+                confirmed_reads = 0
+            elif confirmation_seen:
+                confirmed_reads += 1
+                if confirmed_reads >= 4:
+                    break
+            elif active_reads >= 44:
+                break
+        else:
+            raise RuntimeError(
+                'Skin change was not kept; accept Kodi\'s confirmation and retry')
+        self.progressBar = BackupProgressBar(False)
+        self.progressBar.create(
+            utils.getString(30010) + ' - ' + utils.getString(30017),
+            'Continuing verified skin restore')
+
+    def _makeSkinHost(self):
+        return KodiSkinHost(
+            xbmc, xbmcvfs, xbmcaddon,
+            self._switchSkin, self._skinWait,
+            progress=lambda percent, message:
+                self.progressBar.updateProgress(percent, message),
+            xbmcgui_module=xbmcgui)
+
+    def _readRestoreBytes(self, relative):
+        source = self.remote_vfs.root_path + relative
+        temporary = None
+        try:
+            if isinstance(self.remote_vfs, DropboxFileSystem):
+                if (self.remote_vfs.fileSize(source) * 1024
+                        > MAX_FILE_BYTES):
+                    raise OSError('remote AF3 payload exceeds its safe limit')
+                temporary = xbmcvfs.translatePath(
+                    utils.data_dir() + 'skin-restore-read.tmp')
+                if xbmcvfs.exists(temporary):
+                    xbmcvfs.delete(temporary)
+                if not self.remote_vfs.get_file(source, temporary):
+                    raise OSError('remote AF3 payload download failed')
+                if os.path.getsize(temporary) > MAX_FILE_BYTES:
+                    raise OSError('downloaded AF3 payload exceeds its safe limit')
+                source = temporary
+            with xbmcvfs.File(source, 'r') as handle:
+                return bytes(handle.readBytes(MAX_FILE_BYTES + 1))
+        finally:
+            if temporary is not None and xbmcvfs.exists(temporary):
+                xbmcvfs.delete(temporary)
+
+    def _restoreSkinConfig(self, manifest):
+        try:
+            preview = skin_restore_preview(manifest)
+            label = (
+                'Skin: {skin_id}\nBackup: {created_utc}\n'
+                'Source: {source_device} / {source_profile}\n'
+                'Contains: {setting_count} settings, '
+                '{appearance_count} appearance values and '
+                '{helper_file_count} helper files\n\n'
+                'Current AF3 files will be saved locally for recovery.'
+            ).format(**preview)
+            if not xbmcgui.Dialog().yesno(
+                    'Restore Arctic Fuse 3 configuration', label):
+                return False
+            files = load_skin_snapshot(
+                manifest, self._readRestoreBytes,
+                check_cancel=self.progressBar.checkCancel)
+            profile = os.path.abspath(xbmcvfs.translatePath(
+                'special://profile/'))
+            self._skin_profile = profile
+            data = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
+            os.makedirs(data, exist_ok=True)
+            rollback_root = os.path.join(data, 'skin-rollback')
+            pending_path = os.path.join(data, 'pending-skin-restore.json')
+            host = self._makeSkinHost()
+            stage_skin_restore(
+                manifest, files, self.restore_point, profile,
+                rollback_root, pending_path, host)
+            if xbmcgui.Dialog().ok(
+                    utils.getString(30010),
+                    'AF3 files are staged safely. Kodi will activate Arctic '
+                    'Fuse 3. Choose Yes when Kodi asks to keep the skin; '
+                    'verification will continue afterward.') is False:
+                return False
+            summary = finish_skin_restore(
+                profile, rollback_root, pending_path, host)
+            xbmcgui.Dialog().notification(
+                utils.getString(30010),
+                'Restored and verified {} settings and {} helper files.'
+                .format(summary['setting_count'],
+                        summary['helper_file_count']))
+            return True
+        except (RuntimeError, OSError, ValueError) as error:
+            utils.log('AF3 restore stopped safely: %s' % error,
+                      xbmc.LOGWARNING)
+            try:
+                self.progressBar.close()
+            except Exception:
+                pass
+            xbmcgui.Dialog().ok(
+                utils.getString(30010),
+                'Arctic Fuse 3 restore did not complete. Recovery data was '
+                'preserved.\n\n{}'.format(error))
+            return False
+        finally:
+            self._skin_profile = None
 
 
     def _setupVFS(self, mode=-1, progressOverride=False):

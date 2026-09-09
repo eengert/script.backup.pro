@@ -1,5 +1,19 @@
 # Backup Pro work log
 
+## Phase 7B5 - Interactive restore runtime
+
+- Routes an explicitly selected `skin_config` group through verified preflight,
+  transactional staging, user-confirmed skin changes and completion.
+- Requires AF3 configuration to be restored alone so broad live-file groups do
+  not run inside the skin transaction.
+- Defers the advanced-settings restart prompt until Config was actually
+  selected and prevents it from modifying a skin-only restore.
+- Added preview/completion messages, profile-change/abort checks, local/Dropbox
+  payload readers and unconditional restore VFS/progress cleanup.
+- Bounded local payload reads and Dropbox pre/post-download sizes, used unique
+  rebuild-plan paths, reset stale default-profile selectors and restored the
+  previous selector after rebuild failure.
+
 ## Phase 7B4c - Verified AF3 rebuild
 
 - Invokes Skin Variables' public build routes through a fixed verified plan and

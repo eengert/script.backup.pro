@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.5
+
+### Added
+
+- Interactive Backup Pro runtime dispatch for verified AF3-only restores,
+  including preview, skin-confirmation guidance and completion reporting.
+- Local and Dropbox AF3 payload readers with preflight checksum verification.
+
+### Fixed
+
+- Restore VFS and progress resources now close on every exit path.
+- The advanced-settings restart flow runs only when Config was selected, so it
+  cannot unexpectedly modify an AF3-only restore.
+- AF3 payload reads are bounded, rebuild plans use unique owned paths and a
+  failed rebuild restores the previous generated profile selector.
+
 ## Version 0.9.4
 
 ### Added

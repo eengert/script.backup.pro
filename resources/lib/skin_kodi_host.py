@@ -11,6 +11,7 @@ from xml.etree import ElementTree
 
 from .skin_adapter import (
     AF3_ID,
+    MAX_FILE_BYTES,
     SkinAdapterError,
     checked_appearance,
     checked_skin_setting_values,
@@ -41,7 +42,10 @@ class KodiSkinHost:
 
     def progress(self, percent, message):
         if callable(self.progress_callback):
-            self.progress_callback(percent, message)
+            try:
+                self.progress_callback(percent, message)
+            except Exception:
+                pass
 
     def ensure_dependencies(self, skin, helper):
         for addon_id in (skin, helper):
@@ -194,10 +198,13 @@ class KodiSkinHost:
     def _settings_path(skin):
         return 'special://profile/addon_data/{}/settings.xml'.format(skin)
 
-    def _read(self, path):
+    def _read(self, path, maximum=MAX_FILE_BYTES):
         handle = self.xbmcvfs.File(path)
         try:
-            return bytes(handle.readBytes(handle.size()))
+            size = handle.size()
+            if size > maximum:
+                raise KodiSkinHostError('Kodi VFS file exceeds its safe limit')
+            return bytes(handle.readBytes(size))
         finally:
             handle.close()
 
@@ -327,21 +334,21 @@ class KodiSkinHost:
                 or '\x00' in skin_path):
             raise KodiSkinHostError('AF3 install path is invalid')
 
+        selector_path = os.path.join(
+            skin_path, '1080i',
+            'script-skinvariables-skinusers.xml')
+        selector_previous = None
+        selector_existed = self.xbmcvfs.exists(selector_path)
+        if selector_existed:
+            selector_previous = self._read(selector_path)
+        selector = ElementTree.Element('includes')
         if slug:
-            selector = ElementTree.Element('includes')
             ElementTree.SubElement(selector, 'include', {
                 'file': ('script-skinvariables-generator-includes-{}.xml'
                          .format(slug)),
             })
-            selector_path = os.path.join(
-                skin_path, '1080i',
-                'script-skinvariables-skinusers.xml')
-            selector_data = ElementTree.tostring(
-                selector, encoding='utf-8', xml_declaration=True)
-            self._write(selector_path, selector_data)
-            if self._read(selector_path) != selector_data:
-                raise KodiSkinHostError(
-                    'AF3 skin-profile selector failed verification')
+        selector_data = ElementTree.tostring(
+            selector, encoding='utf-8', xml_declaration=True)
 
         self._clear_helper_cache(pending.get('helper_hashes', {}))
         token = uuid.uuid4().hex
@@ -357,19 +364,28 @@ class KodiSkinHost:
             'SetProperty({},{},Home)'.format(
                 completion_property, token),
         ]
-        plan_path = ('special://profile/addon_data/script.backup.pro/'
-                     'rebuild.json')
+        plan_path = (
+            'special://profile/addon_data/script.backup.pro/'
+            'rebuild-{}.json'.format(token))
+        if self.xbmcvfs.exists(plan_path):
+            raise KodiSkinHostError('AF3 rebuild plan path already exists')
         plan = json.dumps(
             {'actions': actions}, sort_keys=True,
             separators=(',', ':')).encode('utf-8')
-        self._write(plan_path, plan)
-        if self._read(plan_path) != plan:
-            raise KodiSkinHostError('AF3 rebuild plan failed verification')
         command = (
             'RunScript(script.skinvariables,'
             'run_executebuiltin=special://profile/addon_data/'
-            'script.backup.pro/rebuild.json,use_rules=True)')
+            'script.backup.pro/rebuild-{}.json,use_rules=True)'
+            .format(token))
         try:
+            self._write(selector_path, selector_data)
+            if self._read(selector_path) != selector_data:
+                raise KodiSkinHostError(
+                    'AF3 skin-profile selector failed verification')
+            self._write(plan_path, plan)
+            if self._read(plan_path) != plan:
+                raise KodiSkinHostError(
+                    'AF3 rebuild plan failed verification')
             self.xbmc.executebuiltin(command)
             for attempt in range(240):
                 if window.getProperty(completion_property) == token:
@@ -389,8 +405,12 @@ class KodiSkinHost:
                     'AF3 did not remain active after reload')
             self._validate_generated_includes(skin_path)
         except KodiSkinHostError:
+            self._restore_vfs(
+                selector_path, selector_previous, True)
             raise
         except Exception as error:
+            self._restore_vfs(
+                selector_path, selector_previous, True)
             raise KodiSkinHostError('AF3 rebuild failed') from error
         finally:
             window.clearProperty(completion_property)
