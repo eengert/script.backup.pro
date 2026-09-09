@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.8.3
+
+### Added
+
+- Durable `transaction_prepared` handoff that exposes the exact rollback
+  transaction after snapshotting and before profile mutation.
+- Pending schema 2 binds the rollback directory to its journal UUID.
+- Profile-bound transaction status checks confined to the add-on's exact
+  rollback root and transaction identity.
+
+### Security
+
+- Removes the crash window in which restored files could be applied before
+  pending state knew which rollback transaction protected them.
+
 ## Version 0.8.2
 
 ### Added

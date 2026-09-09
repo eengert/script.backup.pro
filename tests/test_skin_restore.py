@@ -11,6 +11,7 @@ from resources.lib import skin_restore
 SETTINGS = 'addon_data/skin.arctic.fuse.3/settings.xml'
 HELPER = ('addon_data/script.skinvariables/nodes/'
           'skin.arctic.fuse.3/main.json')
+TRANSACTION_ID = 'b137a8f5-130e-4a32-9df5-688632ee64ed'
 
 
 def fixture():
@@ -151,8 +152,11 @@ class SkinRestoreTests(unittest.TestCase):
             skin_restore.advance_pending_restore(
                 prepared, 'rebuild', '/rollback/one')
 
+        transaction = skin_restore.advance_pending_restore(
+            prepared, 'transaction_prepared', '/rollback/one',
+            TRANSACTION_ID)
         applied = skin_restore.advance_pending_restore(
-            prepared, 'files_applied', '/rollback/one')
+            transaction, 'files_applied')
         rebuilding = skin_restore.advance_pending_restore(applied, 'rebuild')
         recovering = skin_restore.advance_pending_restore(
             rebuilding, 'rollback_rebuild')
@@ -161,6 +165,10 @@ class SkinRestoreTests(unittest.TestCase):
         with self.assertRaises(skin_restore.SkinRestoreError):
             skin_restore.advance_pending_restore(
                 applied, 'rebuild', '/rollback/two')
+        with self.assertRaises(skin_restore.SkinRestoreError):
+            skin_restore.advance_pending_restore(
+                applied, 'rebuild', transaction_id=
+                'd937a8f5-130e-4a32-9df5-688632ee64ed')
         with self.assertRaises(skin_restore.SkinRestoreError):
             skin_restore.advance_pending_restore(recovering, 'rebuild')
 

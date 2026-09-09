@@ -217,8 +217,8 @@ def _restore_previous(profile, directory, journal):
         _atomic_write_impl(profile, relative, data)
 
 
-def apply_skin_snapshot(profile_path, files, rollback_root):
-    """Apply validated AF3 files and retain an exact durable rollback."""
+def apply_skin_snapshot(profile_path, files, rollback_root, before_apply=None):
+    """Apply AF3 files after exposing the durable rollback before mutation."""
     try:
         checked = validate_snapshot_files(files, AF3_ID)
         profile = _safe_root(profile_path)
@@ -261,6 +261,17 @@ def apply_skin_snapshot(profile_path, files, rollback_root):
             'rollback snapshot failed; profile files were unchanged') from error
     journal['previous_entries'] = entries
     _write_journal(directory, journal, 'prepared')
+    if before_apply is not None:
+        if not callable(before_apply):
+            raise SkinTransactionError('transaction handoff is unavailable')
+        try:
+            before_apply(str(directory), journal['transaction_id'])
+        except Exception as error:
+            # The prepared journal remains unresolved by design. The callback
+            # may have durably recorded this exact rollback identity before it
+            # failed, and no profile file has changed yet.
+            raise SkinTransactionError(
+                'transaction handoff failed before profile mutation') from error
     try:
         _write_journal(directory, journal, 'applying')
         _remove_files(profile, set(existing) - set(checked))
@@ -280,6 +291,30 @@ def apply_skin_snapshot(profile_path, files, rollback_root):
                 'restore failed and rollback failed: ' + str(rollback_error)) from error
         raise SkinTransactionError('restore failed; previous files were restored') from error
     return str(directory)
+
+
+def skin_transaction_status(
+        profile_path, rollback_root, rollback_directory, transaction_id):
+    """Return the validated journal status for one exact profile transaction."""
+    profile = _safe_root(profile_path)
+    base = Path(os.path.abspath(str(_safe_root(rollback_root))))
+    candidate = Path(os.path.abspath(str(rollback_directory)))
+    if candidate.parent != base:
+        raise SkinTransactionError('rollback is outside the transaction root')
+    directory = _safe_root(candidate)
+    journal = _read_journal(directory)
+    if journal.get('profile_path') != os.path.abspath(str(profile)):
+        raise SkinTransactionError('rollback belongs to another profile')
+    if journal.get('skin_id') != AF3_ID:
+        raise SkinTransactionError('rollback belongs to another skin')
+    if (not isinstance(transaction_id, str)
+            or journal.get('transaction_id') != transaction_id):
+        raise SkinTransactionError('rollback transaction identity does not match')
+    status = journal.get('status')
+    if status not in ('snapshotting', 'prepared', 'applying',
+                      'rollback_failed', 'complete', 'rolled_back'):
+        raise SkinTransactionError('invalid transaction status')
+    return status
 
 
 def rollback_skin_transaction(profile_path, rollback_directory):

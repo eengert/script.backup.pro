@@ -4,6 +4,7 @@ from __future__ import unicode_literals
 
 import hashlib
 import json
+import re
 
 from .archive import ARCHIVE_ID, ARCHIVE_VERSION, ArchiveValidationError, validate_manifest
 from .skin_adapter import (
@@ -17,9 +18,11 @@ from .skin_adapter import (
 )
 
 
-PENDING_VERSION = 1
+PENDING_VERSION = 2
 PENDING_MAX_BYTES = 2 * 1024 * 1024
 SETTINGS_PATH = 'addon_data/{}/settings.xml'.format(AF3_ID)
+TRANSACTION_ID_RE = re.compile(
+    r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}')
 
 
 class SkinRestoreError(RuntimeError):
@@ -129,6 +132,7 @@ def build_pending_restore(manifest, files, restore_point):
             for path, data in checked.items() if path != SETTINGS_PATH
         },
         'rollback': None,
+        'transaction_id': None,
     }
     return validate_pending_restore(record)
 
@@ -138,7 +142,7 @@ def validate_pending_restore(record):
     required = {
         'schema_version', 'phase', 'archive_id', 'archive_version',
         'restore_point', 'skin_config', 'files', 'skin_settings',
-        'helper_hashes', 'rollback',
+        'helper_hashes', 'rollback', 'transaction_id',
     }
     if not isinstance(record, dict) or set(record) != required:
         raise SkinRestoreError('pending AF3 restore state is invalid')
@@ -146,7 +150,8 @@ def validate_pending_restore(record):
             or record.get('archive_id') != ARCHIVE_ID
             or record.get('archive_version') != ARCHIVE_VERSION
             or record.get('phase') not in (
-                'prepared', 'files_applied', 'rebuild', 'rollback_rebuild')):
+                'prepared', 'transaction_prepared', 'files_applied',
+                'rebuild', 'rollback_rebuild')):
         raise SkinRestoreError('pending AF3 restore state is unsupported')
     restore_point = record.get('restore_point')
     if (not isinstance(restore_point, str) or not restore_point
@@ -170,14 +175,19 @@ def validate_pending_restore(record):
     if hashes != expected_helpers:
         raise SkinRestoreError('pending AF3 helper hashes do not match the manifest')
     rollback = record.get('rollback')
+    transaction_id = record.get('transaction_id')
     if rollback is not None and (
             not isinstance(rollback, str) or not rollback
             or len(rollback) > 4096 or '\x00' in rollback):
         raise SkinRestoreError('pending AF3 rollback location is invalid')
-    if record['phase'] == 'prepared' and rollback is not None:
-        raise SkinRestoreError('prepared AF3 restore cannot have rollback state')
-    if record['phase'] != 'prepared' and rollback is None:
-        raise SkinRestoreError('applied AF3 restore is missing rollback state')
+    if record['phase'] == 'prepared':
+        if rollback is not None or transaction_id is not None:
+            raise SkinRestoreError(
+                'prepared AF3 restore cannot have transaction state')
+    elif (rollback is None or not isinstance(transaction_id, str)
+          or not TRANSACTION_ID_RE.fullmatch(transaction_id)):
+        raise SkinRestoreError(
+            'applied AF3 restore is missing transaction state')
     result = dict(record)
     result['skin_config'] = metadata
     result['skin_settings'] = settings
@@ -208,11 +218,13 @@ def load_pending_restore(data):
     return validate_pending_restore(record)
 
 
-def advance_pending_restore(record, phase, rollback=None):
+def advance_pending_restore(
+        record, phase, rollback=None, transaction_id=None):
     """Advance a validated restore record through the allowed crash phases."""
     checked = validate_pending_restore(record)
     transitions = {
-        'prepared': ('files_applied',),
+        'prepared': ('transaction_prepared',),
+        'transaction_prepared': ('files_applied', 'rollback_rebuild'),
         'files_applied': ('rebuild', 'rollback_rebuild'),
         'rebuild': ('rollback_rebuild',),
         'rollback_rebuild': (),
@@ -225,7 +237,14 @@ def advance_pending_restore(record, phase, rollback=None):
         if (not isinstance(rollback, str) or not rollback
                 or len(rollback) > 4096 or '\x00' in rollback):
             raise SkinRestoreError('AF3 restore rollback location is required')
+        if (not isinstance(transaction_id, str)
+                or not TRANSACTION_ID_RE.fullmatch(transaction_id)):
+            raise SkinRestoreError('AF3 restore transaction identity is required')
         updated['rollback'] = rollback
+        updated['transaction_id'] = transaction_id
     elif rollback is not None and rollback != checked['rollback']:
         raise SkinRestoreError('AF3 restore rollback location cannot change')
+    elif (transaction_id is not None
+          and transaction_id != checked['transaction_id']):
+        raise SkinRestoreError('AF3 restore transaction identity cannot change')
     return validate_pending_restore(updated)

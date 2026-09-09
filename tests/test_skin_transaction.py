@@ -77,6 +77,75 @@ class SkinTransactionTests(unittest.TestCase):
         directory = next(self.rollback.iterdir())
         self.assertEqual('rolled_back', self.journal(directory)['status'])
 
+    def test_handoff_records_exact_rollback_before_profile_mutation(self):
+        original = self.write(SETTINGS, b'<settings />')
+        observations = []
+
+        def before_apply(directory, transaction_id):
+            observations.append((
+                directory,
+                transaction_id,
+                self.journal(directory)['status'],
+                original.read_bytes(),
+                (self.profile / NODE).exists(),
+            ))
+
+        directory = skin_transaction.apply_skin_snapshot(
+            self.profile, self.incoming(), self.rollback,
+            before_apply=before_apply)
+
+        transaction_id = self.journal(directory)['transaction_id']
+        self.assertEqual([(
+            directory, transaction_id, 'prepared', b'<settings />', False,
+        )], observations)
+        self.assertEqual('complete', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, directory, transaction_id))
+
+    def test_failed_handoff_leaves_prepared_recovery_without_mutation(self):
+        original = self.write(SETTINGS, b'<settings />')
+
+        def fail(_directory, _transaction_id):
+            raise RuntimeError('pending-state disk full')
+
+        with self.assertRaisesRegex(
+                skin_transaction.SkinTransactionError,
+                'handoff failed before profile mutation'):
+            skin_transaction.apply_skin_snapshot(
+                self.profile, self.incoming(), self.rollback,
+                before_apply=fail)
+
+        directory = next(self.rollback.iterdir())
+        self.assertEqual(b'<settings />', original.read_bytes())
+        self.assertFalse((self.profile / NODE).exists())
+        transaction_id = self.journal(directory)['transaction_id']
+        self.assertEqual('prepared', skin_transaction.skin_transaction_status(
+            self.profile, self.rollback, directory, transaction_id))
+        self.assertEqual([str(directory)],
+                         skin_transaction.pending_skin_transactions(
+                             self.profile, self.rollback))
+
+    def test_status_rejects_transaction_outside_exact_rollback_root(self):
+        directory = skin_transaction.apply_skin_snapshot(
+            self.profile, self.incoming(), self.rollback)
+        other_root = self.root / 'other-rollback'
+        other_root.mkdir()
+        with self.assertRaisesRegex(
+                skin_transaction.SkinTransactionError,
+                'outside the transaction root'):
+            skin_transaction.skin_transaction_status(
+                self.profile, other_root, directory,
+                self.journal(directory)['transaction_id'])
+
+    def test_status_rejects_mismatched_transaction_identity(self):
+        directory = skin_transaction.apply_skin_snapshot(
+            self.profile, self.incoming(), self.rollback)
+        with self.assertRaisesRegex(
+                skin_transaction.SkinTransactionError,
+                'identity does not match'):
+            skin_transaction.skin_transaction_status(
+                self.profile, self.rollback, directory,
+                'b137a8f5-130e-4a32-9df5-688632ee64ed')
+
     def test_process_crash_while_applying_is_recovered_next_run(self):
         original = self.write(SETTINGS, b'<settings />')
 

@@ -1,5 +1,15 @@
 # Backup Pro work log
 
+## Phase 7B2c - Pre-mutation transaction handoff
+
+- Added a `transaction_prepared` phase between pending intent and file
+  application.
+- The file transaction now exposes its fully synced rollback directory to a
+  durable-state callback before changing any profile file.
+- Pending schema 2 records both the directory and journal UUID. Added
+  profile/root/identity-confined status inspection and failure tests for
+  callback errors, crash-safe ordering and unsafe or substituted rollbacks.
+
 ## Phase 7B2b - Durable pending-state store
 
 - Added atomic, file-synced persistence for validated AF3 recovery records.
