@@ -125,6 +125,44 @@ class SkinRestoreTests(unittest.TestCase):
         with self.assertRaises(skin_restore.SkinRestoreError):
             skin_restore.validate_pending_restore(damaged)
 
+    def test_pending_codec_is_canonical_bounded_and_strict(self):
+        manifest, payloads = fixture()
+        record = skin_restore.build_pending_restore(
+            manifest, payloads, '20260908120000.zip')
+        encoded = skin_restore.dump_pending_restore(record)
+        self.assertEqual(record, skin_restore.load_pending_restore(encoded))
+        self.assertEqual(encoded, skin_restore.dump_pending_restore(
+            skin_restore.load_pending_restore(encoded)))
+
+        for invalid in (
+                'not bytes', b'{', b'[]', b'\xff',
+                b'x' * (skin_restore.PENDING_MAX_BYTES + 1)):
+            with self.subTest(invalid=type(invalid).__name__):
+                with self.assertRaises(skin_restore.SkinRestoreError):
+                    skin_restore.load_pending_restore(invalid)
+
+    def test_pending_phase_transitions_require_and_preserve_rollback(self):
+        manifest, payloads = fixture()
+        prepared = skin_restore.build_pending_restore(
+            manifest, payloads, '20260908120000.zip')
+        with self.assertRaises(skin_restore.SkinRestoreError):
+            skin_restore.advance_pending_restore(prepared, 'files_applied')
+        with self.assertRaises(skin_restore.SkinRestoreError):
+            skin_restore.advance_pending_restore(
+                prepared, 'rebuild', '/rollback/one')
+
+        applied = skin_restore.advance_pending_restore(
+            prepared, 'files_applied', '/rollback/one')
+        rebuilding = skin_restore.advance_pending_restore(applied, 'rebuild')
+        recovering = skin_restore.advance_pending_restore(
+            rebuilding, 'rollback_rebuild')
+        self.assertEqual('/rollback/one', recovering['rollback'])
+
+        with self.assertRaises(skin_restore.SkinRestoreError):
+            skin_restore.advance_pending_restore(
+                applied, 'rebuild', '/rollback/two')
+        with self.assertRaises(skin_restore.SkinRestoreError):
+            skin_restore.advance_pending_restore(recovering, 'rebuild')
 
 if __name__ == '__main__':
     unittest.main()

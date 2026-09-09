@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 """Verified AF3 restore preflight and durable-state data model."""
 
 import hashlib
+import json
 
 from .archive import ARCHIVE_ID, ARCHIVE_VERSION, ArchiveValidationError, validate_manifest
 from .skin_adapter import (
@@ -17,6 +18,7 @@ from .skin_adapter import (
 
 
 PENDING_VERSION = 1
+PENDING_MAX_BYTES = 2 * 1024 * 1024
 SETTINGS_PATH = 'addon_data/{}/settings.xml'.format(AF3_ID)
 
 
@@ -169,7 +171,8 @@ def validate_pending_restore(record):
         raise SkinRestoreError('pending AF3 helper hashes do not match the manifest')
     rollback = record.get('rollback')
     if rollback is not None and (
-            not isinstance(rollback, str) or not rollback or '\x00' in rollback):
+            not isinstance(rollback, str) or not rollback
+            or len(rollback) > 4096 or '\x00' in rollback):
         raise SkinRestoreError('pending AF3 rollback location is invalid')
     if record['phase'] == 'prepared' and rollback is not None:
         raise SkinRestoreError('prepared AF3 restore cannot have rollback state')
@@ -181,3 +184,48 @@ def validate_pending_restore(record):
     result['files'] = [dict(item) for item in record['files']]
     result['helper_hashes'] = dict(hashes)
     return result
+
+
+def dump_pending_restore(record):
+    """Return the canonical bounded bytes that the Kodi layer must persist."""
+    checked = validate_pending_restore(record)
+    data = json.dumps(
+        checked, sort_keys=True, separators=(',', ':'),
+        ensure_ascii=True).encode('utf-8')
+    if len(data) > PENDING_MAX_BYTES:
+        raise SkinRestoreError('pending AF3 restore state is too large')
+    return data
+
+
+def load_pending_restore(data):
+    """Decode persisted state without trusting its shape, size or contents."""
+    if not isinstance(data, bytes) or len(data) > PENDING_MAX_BYTES:
+        raise SkinRestoreError('pending AF3 restore state is invalid')
+    try:
+        record = json.loads(data.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise SkinRestoreError('pending AF3 restore state is invalid') from error
+    return validate_pending_restore(record)
+
+
+def advance_pending_restore(record, phase, rollback=None):
+    """Advance a validated restore record through the allowed crash phases."""
+    checked = validate_pending_restore(record)
+    transitions = {
+        'prepared': ('files_applied',),
+        'files_applied': ('rebuild', 'rollback_rebuild'),
+        'rebuild': ('rollback_rebuild',),
+        'rollback_rebuild': (),
+    }
+    if phase not in transitions[checked['phase']]:
+        raise SkinRestoreError('invalid AF3 restore phase transition')
+    updated = dict(checked)
+    updated['phase'] = phase
+    if checked['phase'] == 'prepared':
+        if (not isinstance(rollback, str) or not rollback
+                or len(rollback) > 4096 or '\x00' in rollback):
+            raise SkinRestoreError('AF3 restore rollback location is required')
+        updated['rollback'] = rollback
+    elif rollback is not None and rollback != checked['rollback']:
+        raise SkinRestoreError('AF3 restore rollback location cannot change')
+    return validate_pending_restore(updated)

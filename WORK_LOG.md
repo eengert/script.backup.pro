@@ -1,5 +1,13 @@
 # Backup Pro work log
 
+## Phase 7B2a - Restore-state codec
+
+- Added bounded canonical serialization and strict decoding for the AF3
+  pending-restore record.
+- Enforced one-way crash-recovery phase transitions and immutable rollback
+  identity after file application.
+- Kept persistence and Kodi runtime effects outside this low-usage checkpoint.
+
 ## Phase 1 - discovery
 
 - Confirmed standard Backup 1.7.3 and upstream commit `cdd8faf`.

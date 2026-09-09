@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.8.1
+
+### Added
+
+- Canonical, size-bounded serialization for AF3 pending-restore state.
+- One-way restore phase transitions that require and then preserve the exact
+  rollback transaction identity.
+
+### Security
+
+- Rejects malformed, oversized, backward or otherwise impossible persisted
+  restore-state transitions before Kodi orchestration uses them.
+
 ## Version 0.8.0
 
 ### Added

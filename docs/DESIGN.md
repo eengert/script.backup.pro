@@ -130,9 +130,10 @@ live-file copy without preflight and recovery planning.
    Settings Backup behavior. Generic Add-on Data copies exclude the adapter's
    authoritative paths while this option is enabled.
 5. **Transactional restore (in progress)**: durable file rollback, pending
-   recovery, verified payload loading, preview/pending-state validation and
-   failure-injection tests are complete. VFS staging, AF3 activation/rebuild
-   and end-to-end verification remain.
+   recovery, verified payload loading, canonical pending-state serialization,
+   enforced crash-phase transitions, preview/pending-state validation and
+   failure-injection tests are complete. Durable Kodi persistence, VFS staging,
+   AF3 activation/rebuild and end-to-end verification remain.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,
    status, cancellation and recovery-focused menus.
 7. **Mac validation**: compile/package checks, disposable-profile diagnostics,
