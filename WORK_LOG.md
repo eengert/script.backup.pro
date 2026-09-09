@@ -92,3 +92,25 @@ at this checkpoint; live restore verification remains transactional-restore work
 Validation: 43 pure, real-ZIP and Kodi-bridge tests, Python compilation, XML
 parsing and Git whitespace checks passed. No add-on installation, Kodi-profile
 mutation or Apple TV access occurred.
+
+## Phase 5 - Arctic Fuse 3 capture adapter
+
+- Added a Kodi-independent AF3 adapter based on the proven Skin Settings Backup
+  capture rules.
+- Treats Kodi's `Settings.GetSkinSettings` boolean/string map as authoritative
+  and creates a portable `settings.xml`; the possibly stale live-profile file
+  is never copied.
+- Requires the live setting map to remain unchanged across helper collection
+  and omits Script Skin Variables build-fingerprint settings.
+- Captures only AF3 Script Skin Variables source JSON: viewtypes, AF3 nodes,
+  login data and declared or safely inferred user-profile nodes.
+- Rejects malformed typed settings, invalid JSON, unsafe user slugs, symlinks,
+  unstable files and excessive file or byte counts.
+- Produces bounded preview metadata for the source device/profile, skin and
+  helper versions, settings/helper counts, bytes and a deterministic snapshot
+  fingerprint.
+
+Validation: 52 unit and bridge tests, Python compilation, XML parsing and Git
+whitespace checks passed. The adapter phase performed no Kodi-profile or Apple
+TV writes; runtime staging and restore mutation remain transactional-restore
+work.

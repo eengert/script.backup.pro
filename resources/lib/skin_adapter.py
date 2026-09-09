@@ -1,0 +1,382 @@
+from __future__ import unicode_literals
+
+"""Validated capture support for skin configuration adapters.
+
+The first adapter is deliberately limited to Arctic Fuse 3 and the source
+files that Script Skin Variables uses to rebuild its generated output.  Kodi's
+live setting map is authoritative; the skin's on-disk settings.xml is never
+read by this module.
+"""
+
+import hashlib
+import json
+import os
+import re
+import stat
+from pathlib import Path, PurePosixPath
+from xml.etree import ElementTree
+
+
+AF3_ID = 'skin.arctic.fuse.3'
+SKIN_VARIABLES_ID = 'script.skinvariables'
+ADAPTER_ID = 'backup-pro.af3'
+ADAPTER_VERSION = 1
+
+MAX_SETTING_COUNT = 10000
+MAX_FILE_COUNT = 2000
+MAX_FILE_BYTES = 10 * 1024 * 1024
+MAX_TOTAL_BYTES = 50 * 1024 * 1024
+
+_SKIN_ID = re.compile(r'^skin\.[A-Za-z0-9][A-Za-z0-9._-]{0,122}$')
+_SETTING_ID = re.compile(r'^[A-Za-z0-9_.-]{1,256}$')
+_SKIN_USER_SLUG = re.compile(r'^user-[0-9A-Za-z]+$')
+
+
+class SkinAdapterError(ValueError):
+    pass
+
+
+def validate_skin_id(skin_id):
+    if (not isinstance(skin_id, str) or not _SKIN_ID.fullmatch(skin_id)
+            or '..' in skin_id):
+        raise SkinAdapterError('invalid skin id')
+    return skin_id
+
+
+def volatile_skin_setting(setting_id):
+    """Exclude Skin Variables build fingerprints, not user preferences."""
+    return (setting_id.startswith('script-skinvariables-')
+            and setting_id.endswith('-hash'))
+
+
+def checked_skin_setting_values(values):
+    """Validate and normalize Kodi's complete typed skin-setting map."""
+    if not isinstance(values, list) or len(values) > MAX_SETTING_COUNT:
+        raise SkinAdapterError('Kodi returned invalid skin settings')
+    checked = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, dict):
+            raise SkinAdapterError('Kodi returned an invalid skin setting')
+        setting_id = item.get('id')
+        kind = item.get('type')
+        value = item.get('value')
+        if (not isinstance(setting_id, str)
+                or not _SETTING_ID.fullmatch(setting_id)
+                or setting_id in seen
+                or kind not in ('boolean', 'string')
+                or (kind == 'boolean' and not isinstance(value, bool))
+                or (kind == 'string' and not isinstance(value, str))):
+            raise SkinAdapterError('Kodi returned an invalid or duplicate skin setting')
+        seen.add(setting_id)
+        if not volatile_skin_setting(setting_id):
+            checked.append({'id': setting_id, 'type': kind, 'value': value})
+    return sorted(checked, key=lambda item: item['id'].lower())
+
+
+def live_skin_setting_values(result, expected_skin=AF3_ID):
+    """Validate one Settings.GetSkinSettings result from Kodi JSON-RPC."""
+    validate_skin_id(expected_skin)
+    if (not isinstance(result, dict) or result.get('skin') != expected_skin
+            or not isinstance(result.get('settings'), list)):
+        raise SkinAdapterError('Kodi did not expose the active skin settings')
+    return checked_skin_setting_values(result['settings'])
+
+
+def skin_settings_document(values):
+    """Encode typed live settings in Kodi's portable settings.xml format."""
+    checked = checked_skin_setting_values(values)
+    root = ElementTree.Element('settings')
+    for item in checked:
+        kind = 'bool' if item['type'] == 'boolean' else 'string'
+        node = ElementTree.SubElement(
+            root, 'setting', {'id': item['id'], 'type': kind})
+        if kind == 'bool':
+            node.text = 'true' if item['value'] else 'false'
+        else:
+            node.text = item['value']
+    return ElementTree.tostring(root, encoding='utf-8', xml_declaration=True)
+
+
+def skin_settings_equal(left, right):
+    if left is None or right is None or len(left) != len(right):
+        return False
+    return ({item['id']: (item['type'], item['value']) for item in left} ==
+            {item['id']: (item['type'], item['value']) for item in right})
+
+
+def _settings_path(skin_id):
+    return 'addon_data/{}/settings.xml'.format(skin_id)
+
+
+def _viewtypes_path(skin_id):
+    return 'addon_data/{}/{}-viewtypes.json'.format(
+        SKIN_VARIABLES_ID, skin_id)
+
+
+def _skinusers_path(skin_id):
+    return 'addon_data/{}/logins/{}/skinusers.json'.format(
+        SKIN_VARIABLES_ID, skin_id)
+
+
+def _helper_roots(skin_id, user_slugs=()):
+    base = 'addon_data/{}'.format(SKIN_VARIABLES_ID)
+    node_ids = [skin_id]
+    node_ids.extend('{}-{}'.format(skin_id, slug)
+                    for slug in sorted(set(user_slugs)))
+    roots = ['{}/nodes/{}'.format(base, node_id) for node_id in node_ids]
+    roots.append('{}/logins/{}'.format(base, skin_id))
+    return tuple(roots)
+
+
+def _profile_file(root, relative):
+    return root.joinpath(*PurePosixPath(relative).parts)
+
+
+def _path_signature(info):
+    return (info.st_dev, info.st_ino, info.st_size,
+            getattr(info, 'st_mtime_ns', int(info.st_mtime * 1000000000)),
+            getattr(info, 'st_ctime_ns', int(info.st_ctime * 1000000000)))
+
+
+def _assert_safe_root(root):
+    try:
+        info = root.lstat()
+    except OSError as error:
+        raise SkinAdapterError('profile directory is unavailable') from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise SkinAdapterError('profile path is not a safe directory')
+
+
+def _assert_no_symlink_components(root, relative):
+    current = root
+    for part in PurePosixPath(relative).parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise SkinAdapterError('cannot inspect managed path: ' + relative) from error
+        if stat.S_ISLNK(info.st_mode):
+            raise SkinAdapterError('symlinks are not allowed in managed paths: ' + relative)
+
+
+def _read_once(path):
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise SkinAdapterError('managed path is not a regular file: ' + str(path))
+        if before.st_size > MAX_FILE_BYTES:
+            raise SkinAdapterError('managed file exceeds the size limit: ' + str(path))
+        descriptor = os.open(str(path), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            opened = os.fstat(descriptor)
+            chunks = []
+            remaining = MAX_FILE_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after_open = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        after = path.lstat()
+    except SkinAdapterError:
+        raise
+    except OSError as error:
+        raise SkinAdapterError('cannot read managed file: ' + str(path)) from error
+    if len({_path_signature(before), _path_signature(opened),
+            _path_signature(after_open), _path_signature(after)}) != 1:
+        raise SkinAdapterError('managed file changed while being read: ' + str(path))
+    data = b''.join(chunks)
+    if len(data) > MAX_FILE_BYTES:
+        raise SkinAdapterError('managed file exceeds the size limit: ' + str(path))
+    return data, _path_signature(after)
+
+
+def _read_consistent(path):
+    first, first_signature = _read_once(path)
+    second, second_signature = _read_once(path)
+    if first_signature != second_signature or first != second:
+        raise SkinAdapterError('managed file changed while being read: ' + str(path))
+    return first
+
+
+def _load_json(data, description):
+    def reject_constant(value):
+        raise ValueError('non-standard JSON constant: ' + value)
+    try:
+        return json.loads(data.decode('utf-8'), parse_constant=reject_constant)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise SkinAdapterError('invalid JSON in ' + description) from error
+
+
+def _declared_user_slugs(root, skin_id):
+    relative = _skinusers_path(skin_id)
+    _assert_no_symlink_components(root, relative)
+    path = _profile_file(root, relative)
+    if not path.exists():
+        return ()
+    users = _load_json(_read_consistent(path), 'Skin Variables skinusers.json')
+    if not isinstance(users, list):
+        raise SkinAdapterError('Skin Variables skinusers.json must contain a list')
+    found = []
+    for user in users:
+        slug = user.get('slug') if isinstance(user, dict) else None
+        if (not isinstance(slug, str) or not _SKIN_USER_SLUG.fullmatch(slug)
+                or slug in found):
+            raise SkinAdapterError('invalid or duplicate Skin Variables user slug')
+        found.append(slug)
+    return tuple(sorted(found))
+
+
+def _inferred_user_slugs(root, skin_id):
+    relative = 'addon_data/{}/nodes'.format(SKIN_VARIABLES_ID)
+    _assert_no_symlink_components(root, relative)
+    nodes = _profile_file(root, relative)
+    if not nodes.exists():
+        return ()
+    try:
+        info = nodes.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise SkinAdapterError('Skin Variables nodes path is not a safe directory')
+        entries = tuple(os.scandir(str(nodes)))
+    except SkinAdapterError:
+        raise
+    except OSError as error:
+        raise SkinAdapterError('cannot inspect Skin Variables profile directories') from error
+    prefix = skin_id + '-'
+    found = []
+    for entry in entries:
+        if not entry.name.startswith(prefix):
+            continue
+        slug = entry.name[len(prefix):]
+        if not _SKIN_USER_SLUG.fullmatch(slug):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                raise SkinAdapterError('unsafe Skin Variables profile directory: ' + entry.name)
+        except OSError as error:
+            raise SkinAdapterError('cannot inspect Skin Variables profile directory') from error
+        found.append(slug)
+    return tuple(sorted(found))
+
+
+def _enumerate_helper_files(root, skin_id, user_slugs):
+    _assert_safe_root(root)
+    found = []
+    viewtypes = _viewtypes_path(skin_id)
+    _assert_no_symlink_components(root, viewtypes)
+    viewtypes_path = _profile_file(root, viewtypes)
+    if viewtypes_path.exists():
+        info = viewtypes_path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise SkinAdapterError('managed viewtypes path is not a regular file')
+        found.append(viewtypes)
+
+    for relative_root in _helper_roots(skin_id, user_slugs):
+        _assert_no_symlink_components(root, relative_root)
+        directory = _profile_file(root, relative_root)
+        if not directory.exists():
+            continue
+        if not directory.is_dir():
+            raise SkinAdapterError('managed helper root is not a directory')
+        for dirpath, dirnames, filenames in os.walk(str(directory), followlinks=False):
+            base = Path(dirpath)
+            for name in tuple(dirnames) + tuple(filenames):
+                child = base / name
+                info = child.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    raise SkinAdapterError('symlinks are not allowed in managed helper paths')
+            for name in filenames:
+                if not name.endswith('.json'):
+                    continue
+                child = base / name
+                if not stat.S_ISREG(child.lstat().st_mode):
+                    raise SkinAdapterError('managed helper path is not a regular file')
+                found.append(child.relative_to(root).as_posix())
+    # Reserve one entry for the authoritative portable settings document.
+    if len(found) >= MAX_FILE_COUNT:
+        raise SkinAdapterError('skin adapter contains too many helper files')
+    return tuple(sorted(found))
+
+
+def collect_helper_files(profile_path, skin_id=AF3_ID):
+    """Collect only validated Skin Variables source JSON for one skin."""
+    validate_skin_id(skin_id)
+    root = Path(profile_path)
+    first_slugs = tuple(sorted(set(_declared_user_slugs(root, skin_id)) |
+                               set(_inferred_user_slugs(root, skin_id))))
+    first_paths = _enumerate_helper_files(root, skin_id, first_slugs)
+    files = {}
+    total = 0
+    for relative in first_paths:
+        data = _read_consistent(_profile_file(root, relative))
+        _load_json(data, relative)
+        total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise SkinAdapterError('skin adapter helper files exceed the total size limit')
+        files[relative] = data
+    current_slugs = tuple(sorted(set(_declared_user_slugs(root, skin_id)) |
+                                 set(_inferred_user_slugs(root, skin_id))))
+    if (current_slugs != first_slugs
+            or _enumerate_helper_files(root, skin_id, first_slugs) != first_paths):
+        raise SkinAdapterError('managed helper files changed while being collected')
+    return files
+
+
+def snapshot_fingerprint(files):
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        digest.update(path.encode('utf-8'))
+        digest.update(b'\0')
+        digest.update(files[path])
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _metadata_text(value, name):
+    if value is None:
+        return ''
+    if not isinstance(value, str) or len(value) > 256 or '\x00' in value:
+        raise SkinAdapterError('invalid ' + name)
+    return value
+
+
+def capture_af3_snapshot(profile_path, rpc_call, source_device='',
+                         source_profile='', skin_version='', helper_version=''):
+    """Capture one stable AF3 configuration snapshot without mutating Kodi."""
+    if not callable(rpc_call):
+        raise SkinAdapterError('Kodi JSON-RPC reader is unavailable')
+    first = live_skin_setting_values(rpc_call('Settings.GetSkinSettings'), AF3_ID)
+    helpers = collect_helper_files(profile_path, AF3_ID)
+    current = live_skin_setting_values(rpc_call('Settings.GetSkinSettings'), AF3_ID)
+    if not skin_settings_equal(first, current):
+        raise SkinAdapterError('skin settings changed while being collected')
+
+    files = dict(helpers)
+    files[_settings_path(AF3_ID)] = skin_settings_document(current)
+    if len(files) > MAX_FILE_COUNT:
+        raise SkinAdapterError('skin adapter snapshot contains too many files')
+    total_bytes = sum(len(value) for value in files.values())
+    if total_bytes > MAX_TOTAL_BYTES:
+        raise SkinAdapterError('skin adapter snapshot exceeds the total size limit')
+    metadata = {
+        'adapter_id': ADAPTER_ID,
+        'adapter_version': ADAPTER_VERSION,
+        'skin_id': AF3_ID,
+        'skin_version': _metadata_text(skin_version, 'skin version'),
+        'helper_id': SKIN_VARIABLES_ID,
+        'helper_version': _metadata_text(helper_version, 'helper version'),
+        'source_device': _metadata_text(source_device, 'source device'),
+        'source_profile': _metadata_text(source_profile, 'source profile'),
+        'setting_count': len(current),
+        'helper_file_count': len(helpers),
+        'file_count': len(files),
+        'total_bytes': total_bytes,
+        'fingerprint': snapshot_fingerprint(files),
+    }
+    return {'metadata': metadata, 'settings': current, 'files': files}

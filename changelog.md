@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.5.0
+
+### Added
+
+- Arctic Fuse 3 adapter for Kodi's authoritative live boolean and string skin
+  settings.
+- Validated capture of AF3 Script Skin Variables node, login and viewtype JSON,
+  including declared and safely inferred skin-user profiles.
+- Restore-preview metadata for the source device/profile, component versions,
+  setting and helper-file counts, size and snapshot fingerprint.
+
+### Security
+
+- Rejects unstable settings, invalid JSON, unsafe user identifiers, symbolic
+  links and excessive helper file counts or sizes during skin capture.
+- Excludes Skin Variables build fingerprints and unrelated or generated helper
+  output from the managed snapshot.
+
 ## Version 0.4.0
 
 ### Added

@@ -1,6 +1,6 @@
 # Backup Pro design baseline
 
-Status: backup archive creation and read-back complete; AF3 adapter pending
+Status: AF3 capture adapter complete; transactional restore pending
 
 ## Product identity and boundaries
 
@@ -124,8 +124,8 @@ live-file copy without preflight and recovery planning.
    validation and compatibility handling for Backup Pro archives. Folder and
    ZIP publications are read back before completion; retention is blocked on
    copy, cancellation or verification failure.
-4. **AF3 adapter**: live capture, managed helper files and isolated tests using
-   Skin Settings Backup fixtures and behavior.
+4. **AF3 adapter (complete)**: stable live capture, managed helper files,
+   preview metadata and isolated tests using Skin Settings Backup behavior.
 5. **Transactional restore**: rollback, pending recovery, VFS staging, AF3
    activation/rebuild and failure-injection tests.
 6. **Scheduling and UX**: preserve current scheduling, integrate previews,

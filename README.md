@@ -11,10 +11,12 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.4.0 adds measured backup planning, opt-in TMDb Helper generated-image
-exclusions, checksummed manifests, bounded ZIP preflight and verified backup
-read-back before retention. Transactional restore, Arctic Fuse 3 integration
-and final artwork remain planned. See
+Version 0.5.0 adds a validated Arctic Fuse 3 capture adapter to the measured
+planning, cache-exclusion and verified-archive foundation. It captures Kodi's
+live typed skin settings and only the proven Script Skin Variables source JSON
+needed for rebuilding AF3, excluding stale disk settings and generated build
+fingerprints. Transactional restore, runtime UI integration and final artwork
+remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
 
 ## Attribution

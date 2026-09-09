@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="script.backup.pro"
-    name="Backup Pro" version="0.4.0" provider-name="robweber, eengert">
+    name="Backup Pro" version="0.5.0" provider-name="robweber, eengert">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
     <import addon="script.module.dateutil" version="2.8.0" />
@@ -23,8 +23,8 @@
 		<screenshot>resources/images/screenshot3.jpg</screenshot>
 		<screenshot>resources/images/screenshot4.jpg</screenshot>
     </assets>
-    <news>Version 0.4.0
-Verifies published folder and ZIP backups before completion and runs retention only after successful read-back.
+    <news>Version 0.5.0
+Adds validated Arctic Fuse 3 live-setting and Skin Variables source-data capture.
 </news>
     <summary lang="ar_SA">إنسخ إحتياطياً قاعده بيانات إكس بى إم سى وملفات اﻹعدادات فى حاله وقوع إنهيار مع إمكانيه اﻹسترجاع</summary>
     <summary lang="bg_BG">Добавката може да създава резервни копия и възстановява базата данни и настройките на Kodi, в случай на срив или повреда на файловете.</summary>
