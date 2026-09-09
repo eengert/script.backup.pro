@@ -1,5 +1,12 @@
 # Backup Pro work log
 
+## Phase 7B2b - Durable pending-state store
+
+- Added atomic, file-synced persistence for validated AF3 recovery records.
+- Added strict reads and verified clearing that preserves absent, corrupt,
+  changed, symlinked or otherwise unsafe state for diagnosis and recovery.
+- Kept all live Kodi/profile effects outside this low-usage checkpoint.
+
 ## Phase 7B2a - Restore-state codec
 
 - Added bounded canonical serialization and strict decoding for the AF3

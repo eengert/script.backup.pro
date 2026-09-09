@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.8.2
+
+### Added
+
+- Atomic, synced local persistence for AF3 pending-restore state.
+- Verified clear operation that refuses to remove absent, corrupt or changed
+  recovery state.
+
+### Security
+
+- Rejects symlinked or non-file pending-state targets without touching their
+  destination.
+
 ## Version 0.8.1
 
 ### Added
