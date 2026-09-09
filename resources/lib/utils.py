@@ -64,7 +64,7 @@ def diskString(fSize):
     i = 0
     sizeNames = ['KB', 'MB', 'GB', 'TB']
 
-    while(fSize > 1024):
+    while(fSize > 1024 and i < len(sizeNames) - 1):
         fSize = fSize / 1024
         i = i + 1
 
