@@ -1,5 +1,21 @@
 # Backup Pro work log
 
+## Phase 7B3a - Transactional staging coordinator
+
+- Added a dedicated, dependency-injected coordinator rather than placing AF3
+  policy in the generic live-file restore loop.
+- Orders durable pending intent, playback stop, AF3 deactivation, exact
+  transaction handoff, file application, Kodi VFS settings staging and the
+  recoverable `rebuild` checkpoint.
+- Added read-only phase/journal reconciliation plus failure-injection tests for
+  every pre-rebuild crash window, skin rejection, VFS failure, orphaned state
+  and substituted transaction identity.
+- Serialized each profile's restore orchestration with a process lock, froze
+  and revalidated the payload before mutation, verified playback/skin
+  postconditions and rejected ambiguous extra transactions.
+- Kept `rollback_rebuild` unavailable at this checkpoint until its expected
+  state can be rebuilt from the exact rollback snapshot.
+
 ## Phase 7B2d - AF3 appearance contract
 
 - Added stable capture for Kodi's AF3 theme, colors, font and zoom settings.

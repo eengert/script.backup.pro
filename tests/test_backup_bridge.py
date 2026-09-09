@@ -34,7 +34,7 @@ def install_kodi_stubs():
 
         def getAddonInfo(self, name):
             return {'path': '.', 'profile': '/profile/',
-                    'version': '0.8.4'}.get(name, '')
+                    'version': '0.9.0'}.get(name, '')
 
         def getLocalizedString(self, string_id):
             return str(string_id)

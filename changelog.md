@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.0
+
+### Added
+
+- Dependency-injected AF3 restore coordinator that orders dependency checks,
+  durable intent, playback stop, target-skin deactivation, rollback handoff,
+  transactional file replacement, Kodi VFS settings staging and the rebuild
+  checkpoint.
+- Read-only pending-state inspection that selects an exact recovery action from
+  the pending phase and linked transaction status.
+
+### Security
+
+- Preserves pending state and rollback evidence at every tested crash boundary,
+  skin rejection and VFS staging failure.
+- Rejects orphaned, substituted and phase-inconsistent transactions instead of
+  guessing which recovery data belongs to the restore.
+- Locks concurrent restore starts, binds the immutable applied payload to the
+  pending record and verifies playback stopped and AF3 became inactive before
+  creating rollback data.
+
 ## Version 0.8.4
 
 ### Added
