@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.8.0
+
+### Added
+
+- AF3 restore preview containing the source device/profile, component versions,
+  settings/helper counts, payload size and rollback requirement.
+- Verified loader for every `skin_config` payload member with cancellation.
+- Strict pending-restore record containing typed live settings, helper hashes,
+  manifest records and rollback phase requirements.
+
+### Security
+
+- Revalidates path scope, per-file hashes, sizes, aggregate fingerprint and
+  live-setting count before restore mutation.
+- Rejects damaged, incomplete or internally inconsistent pending state.
+
 ## Version 0.7.0
 
 ### Added

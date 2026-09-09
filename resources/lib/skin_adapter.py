@@ -99,6 +99,36 @@ def skin_settings_document(values):
     return ElementTree.tostring(root, encoding='utf-8', xml_declaration=True)
 
 
+def skin_setting_values(document):
+    """Decode and validate one portable settings.xml document."""
+    if not isinstance(document, bytes) or len(document) > MAX_FILE_BYTES:
+        raise SkinAdapterError('settings.xml data is invalid')
+    try:
+        root = ElementTree.fromstring(document)
+    except (ElementTree.ParseError, ValueError) as error:
+        raise SkinAdapterError('settings.xml is not valid XML') from error
+    if root.tag != 'settings' or any(child.tag != 'setting' for child in root):
+        raise SkinAdapterError('settings.xml must contain direct setting entries')
+    values = []
+    for item in root:
+        if list(item):
+            raise SkinAdapterError('skin setting entries cannot be nested')
+        setting_id = item.get('id') or item.get('name')
+        kind = item.get('type') or 'string'
+        if kind == 'bool':
+            text = (item.text or '').strip().lower()
+            if text not in ('true', 'false'):
+                raise SkinAdapterError('invalid boolean skin setting')
+            values.append({'id': setting_id, 'type': 'boolean',
+                           'value': text == 'true'})
+        elif kind == 'string':
+            values.append({'id': setting_id, 'type': 'string',
+                           'value': item.text or ''})
+        else:
+            raise SkinAdapterError('unsupported skin setting type')
+    return checked_skin_setting_values(values)
+
+
 def skin_settings_equal(left, right):
     if left is None or right is None or len(left) != len(right):
         return False
@@ -390,30 +420,7 @@ def validate_snapshot_files(files, skin_id=AF3_ID):
         if total > MAX_TOTAL_BYTES:
             raise SkinAdapterError('skin adapter snapshot exceeds the total size limit')
         if path == settings:
-            try:
-                root = ElementTree.fromstring(data)
-            except (ElementTree.ParseError, ValueError) as error:
-                raise SkinAdapterError('settings.xml is not valid XML') from error
-            if root.tag != 'settings' or any(child.tag != 'setting' for child in root):
-                raise SkinAdapterError('settings.xml must contain direct setting entries')
-            values = []
-            for item in root:
-                if list(item):
-                    raise SkinAdapterError('skin setting entries cannot be nested')
-                setting_id = item.get('id') or item.get('name')
-                kind = item.get('type') or 'string'
-                if kind == 'bool':
-                    text = (item.text or '').strip().lower()
-                    if text not in ('true', 'false'):
-                        raise SkinAdapterError('invalid boolean skin setting')
-                    values.append({'id': setting_id, 'type': 'boolean',
-                                   'value': text == 'true'})
-                elif kind == 'string':
-                    values.append({'id': setting_id, 'type': 'string',
-                                   'value': item.text or ''})
-                else:
-                    raise SkinAdapterError('unsupported skin setting type')
-            checked_skin_setting_values(values)
+            skin_setting_values(data)
         else:
             _load_json(data, path)
         checked[path] = data
@@ -501,7 +508,13 @@ def validate_snapshot_manifest(metadata, files):
             raise SkinAdapterError('invalid AF3 snapshot file record')
         path = item.get('path')
         size = item.get('size')
-        if not isinstance(path, str) or not isinstance(size, int):
+        checksum = item.get('sha256')
+        if (set(item) != {'path', 'size', 'sha256'}
+                or not isinstance(path, str)
+                or not isinstance(size, int) or isinstance(size, bool)
+                or size < 0 or size > MAX_FILE_BYTES
+                or not isinstance(checksum, str)
+                or not _SHA256.fullmatch(checksum)):
             raise SkinAdapterError('invalid AF3 snapshot file record')
         paths.append(path)
         total_bytes += size

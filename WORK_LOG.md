@@ -158,3 +158,23 @@ Validation: 65 unit, failure-injection and bridge tests, Python compilation,
 XML parsing and Git whitespace checks passed. All transaction tests used
 temporary profiles. No Kodi profile or Apple TV was modified. Kodi skin
 switching, VFS staging, AF3 rebuild and live verification remain Phase 7B.
+
+## Phase 7B1 - AF3 restore preflight
+
+- Added a bounded restore preview containing the skin/helper identities and
+  versions, source device/profile, capture time, settings/helper counts, bytes
+  and explicit rollback requirement.
+- Reads every selected `skin_config` member through a caller-provided VFS
+  bridge, verifies its exact size and SHA-256, validates XML/JSON content and
+  requires the aggregate capture fingerprint to match.
+- Converts the portable settings document back into a sorted typed live-value
+  map and verifies the manifest setting count.
+- Builds and revalidates a complete pending-operation record containing the
+  restore point, normalized manifest records, typed settings, helper hashes and
+  phase-dependent rollback requirements.
+- Rejects cancellation, damaged payloads, metadata/payload mismatches and
+  malformed or invented pending state before mutation is allowed.
+
+Validation: 69 unit, preflight, failure-injection and bridge tests, Python
+compilation, XML parsing and Git whitespace checks passed. No Kodi profile or
+Apple TV was modified. Live Kodi orchestration remains Phase 7B2.
