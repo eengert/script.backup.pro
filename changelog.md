@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.1
+
+### Added
+
+- Verified Kodi host boundary for dependency checks, playback stop, safe-skin
+  activation and AF3 settings staging through Kodi VFS.
+- Semantic VFS read-back verification with restoration of the prior settings
+  document when staging fails.
+
 ## Version 0.9.0
 
 ### Added

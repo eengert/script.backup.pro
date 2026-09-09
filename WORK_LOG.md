@@ -1,5 +1,15 @@
 # Backup Pro work log
 
+## Phase 7B3b - Verified Kodi host boundary
+
+- Added a dependency-injected Kodi facade for installed add-on checks,
+  observed playback stop and target-skin deactivation through an installed
+  safe skin.
+- Ported the proven Kodi VFS settings staging behavior with semantic read-back
+  validation and best-effort restoration of the previous document on failure.
+- Added isolated tests for dependency, playback, skin-switch and VFS failure
+  paths without touching a live Kodi profile.
+
 ## Phase 7B3a - Transactional staging coordinator
 
 - Added a dedicated, dependency-injected coordinator rather than placing AF3

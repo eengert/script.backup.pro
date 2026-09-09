@@ -11,7 +11,7 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.9.0 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
+Version 0.9.1 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
 cache-exclusion and verified-archive foundation. It captures Kodi's live typed
 skin settings and only the proven Script Skin Variables source JSON needed for
 rebuilding AF3. Managed source paths are omitted from the generic Add-on Data
@@ -28,7 +28,9 @@ handed to durable pending state before profile mutation starts. A dependency-
 injected coordinator now stages restores in crash-safe order through playback
 stop, target-skin deactivation, transactional replacement, verified Kodi VFS
 settings staging and a durable pre-rebuild checkpoint. Runtime dispatch, AF3
-activation/rebuild and final verification remain to be connected. Final UX
+activation/rebuild and final verification remain to be connected. Its tested
+Kodi boundary verifies installed dependencies, stopped playback, safe-skin
+activation and read-back of settings staged through Kodi VFS. Final UX
 integration and artwork remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
 
