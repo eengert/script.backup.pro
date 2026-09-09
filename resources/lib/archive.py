@@ -7,6 +7,7 @@ import stat
 import zipfile
 
 from .planning import relative_path
+from .skin_adapter import SkinAdapterError, validate_snapshot_manifest
 
 
 ARCHIVE_ID = 'script.backup.pro.archive'
@@ -349,7 +350,7 @@ def build_manifest(groups, hash_file, metadata=None, check_cancel=None):
         files.sort(key=lambda item: item['path'].casefold())
         directories.append({
             'name': name,
-            'path': group['source'],
+            'path': group.get('restore_path', group['source']),
             'files': files,
         })
 
@@ -439,6 +440,18 @@ def validate_manifest(document):
     result['directories'] = normalized_groups
     result['file_count'] = file_count
     result['total_bytes'] = total_bytes
+    skin_groups = [group for group in normalized_groups
+                   if group['name'].casefold() == 'skin_config']
+    skin_metadata = document.get('skin_config')
+    if bool(skin_groups) != (skin_metadata is not None):
+        raise ArchiveValidationError(
+            'AF3 snapshot metadata and directory must appear together')
+    if skin_groups:
+        try:
+            result['skin_config'] = validate_snapshot_manifest(
+                skin_metadata, skin_groups[0]['files'])
+        except SkinAdapterError as error:
+            raise ArchiveValidationError(str(error))
     return result
 
 

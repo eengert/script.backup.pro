@@ -11,12 +11,14 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.5.0 adds a validated Arctic Fuse 3 capture adapter to the measured
-planning, cache-exclusion and verified-archive foundation. It captures Kodi's
-live typed skin settings and only the proven Script Skin Variables source JSON
-needed for rebuilding AF3, excluding stale disk settings and generated build
-fingerprints. Transactional restore, runtime UI integration and final artwork
-remain planned. See
+Version 0.6.0 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
+cache-exclusion and verified-archive foundation. It captures Kodi's live typed
+skin settings and only the proven Script Skin Variables source JSON needed for
+rebuilding AF3. Managed source paths are omitted from the generic Add-on Data
+group so stale settings and generated helper output cannot override the
+authoritative snapshot. Transactional AF3 restore is deliberately blocked in
+this development build until its rollback and recovery handler is complete.
+Final UX integration and artwork remain planned. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for scope and acceptance criteria.
 
 ## Attribution

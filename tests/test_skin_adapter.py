@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from xml.etree import ElementTree
 
 from resources.lib import skin_adapter
@@ -91,6 +92,24 @@ class SkinAdapterTests(unittest.TestCase):
         self.assertEqual({relative: b'{"label":"Guest"}'},
                          skin_adapter.collect_helper_files(self.profile))
 
+    def test_managed_source_paths_collapse_helper_roots_and_reject_outputs(self):
+        files = {
+            'addon_data/skin.arctic.fuse.3/settings.xml': b'<settings />',
+            'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/a.json': b'{}',
+            'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/b.json': b'{}',
+            'addon_data/script.skinvariables/logins/skin.arctic.fuse.3/user.json': b'{}',
+        }
+        self.assertEqual((
+            'addon_data/script.skinvariables/logins/skin.arctic.fuse.3',
+            'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3',
+            'addon_data/skin.arctic.fuse.3/settings.xml',
+        ), skin_adapter.managed_source_paths(files))
+
+        with self.assertRaises(skin_adapter.SkinAdapterError):
+            skin_adapter.managed_source_paths({
+                'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/generated.xml': b'',
+            })
+
     def test_rejects_invalid_json_and_symlinks(self):
         invalid = self.write(
             'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/main.json',
@@ -163,6 +182,17 @@ class SkinAdapterTests(unittest.TestCase):
         with self.assertRaises(skin_adapter.SkinAdapterError):
             skin_adapter.capture_af3_snapshot(
                 self.profile, lambda _method: next(results))
+
+    def test_capture_rejects_helpers_that_change_across_quiet_period(self):
+        snapshots = ({'one.json': b'one'}, {'one.json': b'two'})
+        settled = []
+        with mock.patch.object(
+                skin_adapter, 'collect_helper_files', side_effect=snapshots):
+            with self.assertRaises(skin_adapter.SkinAdapterError):
+                skin_adapter.capture_af3_snapshot(
+                    self.profile, lambda _method: self.result(),
+                    settle=lambda: settled.append(True))
+        self.assertEqual([True], settled)
 
 
 if __name__ == '__main__':

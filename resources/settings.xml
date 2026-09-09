@@ -210,6 +210,11 @@
           </dependencies>
           <control type="toggle" />
         </setting>
+        <setting id="backup_skin_config" type="boolean" label="30166" help="30167">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
         <setting id="backup_config" type="boolean" label="30035" help="">
           <level>0</level>
           <default>true</default>

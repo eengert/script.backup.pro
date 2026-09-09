@@ -6,6 +6,7 @@ import xbmcgui
 import xbmcaddon
 import xbmcvfs
 import os.path
+import shutil
 from . import utils as utils
 from datetime import datetime
 from . vfs import XBMCFileSystem, DropboxFileSystem, ZipFileSystem
@@ -26,6 +27,13 @@ from resources.lib.planning import (
     TMDB_HELPER_ID,
     summarize_file_groups,
     tmdb_helper_cache_exclusions,
+)
+from resources.lib.skin_adapter import (
+    AF3_ID,
+    SKIN_VARIABLES_ID,
+    SkinAdapterError,
+    capture_af3_snapshot,
+    managed_source_paths,
 )
 
 
@@ -76,6 +84,9 @@ class XbmcBackup:
         self._active_artifact = None
         self._active_artifact_compressed = False
         self._vfs_closed = True
+        self._skin_stage_path = None
+        self._skin_snapshot_metadata = None
+        self._skin_managed_exclusions = []
 
         self.configureRemote()
         utils.log(utils.getString(30046))
@@ -145,6 +156,7 @@ class XbmcBackup:
             utils.showNotification(utils.getString(30092))
             return False
         finally:
+            self._cleanupSkinStage()
             if not self._vfs_closed:
                 self._closeVFS()
 
@@ -378,6 +390,15 @@ class XbmcBackup:
                 selectedSets = [restoreSets.index(n) for n in selectedSets if n in restoreSets]  # if set name not found just skip it
 
             if(selectedSets is not None):
+                if any(restoreSets[index].casefold() == 'skin_config'
+                       for index in selectedSets):
+                    utils.log(
+                        'AF3 restore requires the transactional restore handler',
+                        xbmc.LOGWARNING)
+                    xbmcgui.Dialog().ok(
+                        utils.getString(30010),
+                        'Arctic Fuse 3 restore is not available in this development build.')
+                    return False
 
                 # go through each of the directories in the backup and write them to the correct location
                 for index in selectedSets:
@@ -567,6 +588,12 @@ class XbmcBackup:
     def _collectBackupFiles(self):
         allFiles = []
         self.transferSize = 0
+        self._skin_snapshot_metadata = None
+        self._skin_managed_exclusions = []
+        self._automatic_exclusion_rules = None
+        skin_group = None
+        if utils.getSettingBool('backup_skin_config'):
+            skin_group = self._captureSkinConfigGroup()
 
         if(utils.getSettingInt('backup_selection_type') == 0):
             selectedDirs = self._readBackupConfig(
@@ -584,16 +611,96 @@ class XbmcBackup:
                 allFiles.append(self._addBackupDir(
                     name, selected['root'], selected['dirs']))
 
+        if skin_group is not None:
+            allFiles.append(skin_group)
+
         self.backup_plan = summarize_file_groups(allFiles)
         utils.log('Backup plan: %s' % json.dumps(
             self.backup_plan, sort_keys=True))
         return allFiles
+
+    def _skinRpc(self, method):
+        request = json.dumps({
+            'jsonrpc': '2.0', 'method': method, 'params': {}, 'id': 1,
+        })
+        response = json.loads(xbmc.executeJSONRPC(request))
+        if not isinstance(response, dict) or 'error' in response:
+            raise SkinAdapterError('Kodi could not complete ' + method)
+        return response.get('result')
+
+    def _captureSkinConfigGroup(self):
+        if xbmc.getSkinDir() != AF3_ID:
+            raise SkinAdapterError(
+                'Arctic Fuse 3 must be active to capture its live settings')
+        profile = xbmcvfs.translatePath('special://profile/')
+        snapshot = capture_af3_snapshot(
+            profile,
+            self._skinRpc,
+            source_device=xbmc.getInfoLabel('System.FriendlyName'),
+            source_profile=xbmc.getInfoLabel('System.ProfileName'),
+            skin_version=xbmcaddon.Addon(AF3_ID).getAddonInfo('version'),
+            helper_version=xbmcaddon.Addon(
+                SKIN_VARIABLES_ID).getAddonInfo('version'),
+            settle=lambda: xbmc.sleep(2000),
+        )
+        owned_paths = managed_source_paths(snapshot['files'])
+        stage_root = os.path.abspath(os.path.join(
+            xbmcvfs.translatePath(utils.data_dir()), 'skin-staging'))
+        data_root = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
+        if os.path.dirname(stage_root) != data_root:
+            raise SkinAdapterError('invalid skin staging path')
+        if os.path.lexists(stage_root):
+            if os.path.islink(stage_root) or not os.path.isdir(stage_root):
+                raise SkinAdapterError('skin staging path is not a safe directory')
+            shutil.rmtree(stage_root)
+        os.makedirs(stage_root)
+        self._skin_stage_path = stage_root
+
+        for relative, data in snapshot['files'].items():
+            destination = os.path.abspath(os.path.join(stage_root, relative))
+            if os.path.commonpath((stage_root, destination)) != stage_root:
+                raise SkinAdapterError('skin staging path escaped its root')
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            with open(destination, 'wb') as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+        self._skin_snapshot_metadata = snapshot['metadata']
+        self._skin_managed_exclusions = [{
+            'type': 'exclude',
+            'path': xbmcvfs.translatePath('special://profile/' + relative),
+            'adapter': AF3_ID,
+            'reason': 'Captured by the authoritative AF3 configuration adapter',
+        } for relative in owned_paths]
+        group = self._addBackupDir('skin_config', stage_root, [{
+            'type': 'include', 'path': stage_root, 'recurse': True,
+        }])
+        group['restore_path'] = 'special://profile/'
+        return group
+
+    def _cleanupSkinStage(self):
+        stage_root = getattr(self, '_skin_stage_path', None)
+        if not stage_root:
+            return
+        try:
+            data_root = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
+            expected = os.path.join(data_root, 'skin-staging')
+            if os.path.abspath(stage_root) != expected or os.path.islink(stage_root):
+                utils.log('Refusing unsafe skin-stage cleanup', xbmc.LOGWARNING)
+                return
+            if os.path.isdir(stage_root):
+                shutil.rmtree(stage_root)
+        finally:
+            self._skin_stage_path = None
 
     def _automaticExclusions(self):
         if self._automatic_exclusion_rules is not None:
             return self._automatic_exclusion_rules
 
         self._automatic_exclusion_rules = []
+        self._automatic_exclusion_rules.extend(
+            getattr(self, '_skin_managed_exclusions', []))
         if not utils.getSettingBool('exclude_tmdbh_image_cache'):
             return self._automatic_exclusion_rules
 
@@ -611,8 +718,8 @@ class XbmcBackup:
         location = configured or (
             'special://profile/addon_data/%s' % TMDB_HELPER_ID)
         translated = xbmcvfs.translatePath(location)
-        self._automatic_exclusion_rules = tmdb_helper_cache_exclusions(
-            translated)
+        self._automatic_exclusion_rules.extend(
+            tmdb_helper_cache_exclusions(translated))
         return self._automatic_exclusion_rules
 
     def _dateFormat(self, dirName):
@@ -693,8 +800,7 @@ class XbmcBackup:
 
     def _createValidationFile(self, dirList):
         gui_settings = GuiSettingsManager()
-        valInfo = build_manifest(dirList, lambda path: self._hashFile(
-            path, cancellable=True), {
+        metadata = {
             "name": "Backup Pro Manifest",
             "created_utc": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
             "addon_id": utils.__addon_id__,
@@ -705,7 +811,12 @@ class XbmcBackup:
             "system_settings": gui_settings.backup(),
             "addons": gui_settings.list_addons(),
             "plan": self.backup_plan,
-        }, check_cancel=self.progressBar.checkCancel)
+        }
+        if self._skin_snapshot_metadata is not None:
+            metadata['skin_config'] = self._skin_snapshot_metadata
+        valInfo = build_manifest(dirList, lambda path: self._hashFile(
+            path, cancellable=True), metadata,
+            check_cancel=self.progressBar.checkCancel)
         self.backup_manifest = valInfo
 
         local_manifest = xbmcvfs.translatePath(

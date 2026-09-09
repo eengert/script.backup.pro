@@ -666,3 +666,11 @@ msgstr "Exclude TMDb Helper generated image cache"
 msgctxt "#30165"
 msgid "Omits regenerable blur, crop, desaturate and color cache folders; settings, players and databases remain included"
 msgstr "Omits regenerable blur, crop, desaturate and color cache folders; settings, players and databases remain included"
+
+msgctxt "#30166"
+msgid "Back up Arctic Fuse 3 configuration"
+msgstr "Back up Arctic Fuse 3 configuration"
+
+msgctxt "#30167"
+msgid "Captures live skin settings and managed Skin Variables source data; Arctic Fuse 3 must be active"
+msgstr "Captures live skin settings and managed Skin Variables source data; Arctic Fuse 3 must be active"

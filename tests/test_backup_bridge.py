@@ -16,6 +16,7 @@ def install_kodi_stubs():
     xbmc.getRegion = lambda _name: '%Y-%m-%d'
     xbmc.executeJSONRPC = lambda _request: '{}'
     xbmc.getInfoLabel = lambda _name: ''
+    xbmc.getSkinDir = lambda: 'skin.arctic.fuse.3'
     xbmc.executebuiltin = lambda _command: None
     xbmc.log = lambda _message, level=0: None
     xbmc.sleep = lambda _milliseconds: None
@@ -33,7 +34,7 @@ def install_kodi_stubs():
 
         def getAddonInfo(self, name):
             return {'path': '.', 'profile': '/profile/',
-                    'version': '0.5.0'}.get(name, '')
+                    'version': '0.6.0'}.get(name, '')
 
         def getLocalizedString(self, string_id):
             return str(string_id)
@@ -98,6 +99,81 @@ from tests.test_planning import FakeVfs  # noqa: E402
 
 
 class BackupBridgeTests(unittest.TestCase):
+    def test_skin_and_tmdb_exclusions_are_combined(self):
+        original_setting = backup_module.utils.getSettingBool
+        try:
+            backup_module.utils.getSettingBool = lambda name: (
+                name == 'exclude_tmdbh_image_cache')
+            instance = object.__new__(XbmcBackup)
+            instance._automatic_exclusion_rules = None
+            instance._skin_managed_exclusions = [{
+                'type': 'exclude', 'path': '/profile/skin',
+                'adapter': 'skin.arctic.fuse.3', 'reason': 'managed',
+            }]
+            exclusions = instance._automaticExclusions()
+            self.assertEqual(5, len(exclusions))
+            self.assertEqual('/profile/skin', exclusions[0]['path'])
+            self.assertEqual({
+                'blur_v3', 'crop_v2', 'desaturate_v2', 'colors_v2',
+            }, {item['path'].rsplit('/', 1)[-1] for item in exclusions[1:]})
+        finally:
+            backup_module.utils.getSettingBool = original_setting
+
+    def test_stages_af3_snapshot_and_cleans_it_without_touching_profile(self):
+        original_data_dir = backup_module.utils.data_dir
+        original_capture = backup_module.capture_af3_snapshot
+        original_get_info = backup_module.xbmc.getInfoLabel
+        original_translate = backup_module.xbmcvfs.translatePath
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                addon_data = os.path.join(directory, 'addon')
+                profile = os.path.join(directory, 'profile')
+                os.makedirs(addon_data)
+                os.makedirs(profile)
+                backup_module.utils.data_dir = lambda: addon_data + '/'
+                backup_module.xbmcvfs.translatePath = lambda path: (
+                    profile + '/' if path == 'special://profile/' else path)
+                backup_module.xbmc.getInfoLabel = lambda name: {
+                    'System.FriendlyName': 'MacBook',
+                    'System.ProfileName': 'Master',
+                }.get(name, '')
+                files = {
+                    'addon_data/skin.arctic.fuse.3/settings.xml': b'<settings />',
+                    'addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/main.json': b'{}',
+                }
+                backup_module.capture_af3_snapshot = lambda *_args, **_kwargs: {
+                    'metadata': {'adapter_id': 'backup-pro.af3'},
+                    'files': files,
+                }
+                instance = object.__new__(XbmcBackup)
+                instance._skin_stage_path = None
+                instance._skin_snapshot_metadata = None
+                instance._skin_managed_exclusions = []
+                instance._automatic_exclusion_rules = None
+                instance.remote_vfs = type(
+                    'Remote', (), {'root_path': '/backup/'})()
+                instance._addBackupDir = lambda name, root, dirs: {
+                    'name': name, 'source': root, 'dest': '/backup/',
+                    'files': [], 'summary': {},
+                }
+
+                group = instance._captureSkinConfigGroup()
+                stage = instance._skin_stage_path
+
+                self.assertEqual('special://profile/', group['restore_path'])
+                self.assertEqual(2, len(instance._skin_managed_exclusions))
+                self.assertTrue(os.path.exists(os.path.join(
+                    stage, 'addon_data/skin.arctic.fuse.3/settings.xml')))
+                self.assertFalse(os.path.exists(os.path.join(
+                    profile, 'addon_data/skin.arctic.fuse.3/settings.xml')))
+                instance._cleanupSkinStage()
+                self.assertFalse(os.path.exists(stage))
+        finally:
+            backup_module.utils.data_dir = original_data_dir
+            backup_module.capture_af3_snapshot = original_capture
+            backup_module.xbmc.getInfoLabel = original_get_info
+            backup_module.xbmcvfs.translatePath = original_translate
+
     def test_kodi_file_manager_uses_planner_and_keeps_progress_nonzero(self):
         root = '/empty'
         manager = FileManager(FakeVfs({root: ([], [])}, {}))

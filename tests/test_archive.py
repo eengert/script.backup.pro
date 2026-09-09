@@ -22,6 +22,7 @@ from resources.lib.archive import (
     verify_manifest_files,
     verify_zip_archive,
 )
+from resources.lib.skin_adapter import snapshot_fingerprint
 
 
 class Entry:
@@ -142,6 +143,60 @@ class ManifestTests(unittest.TestCase):
             item['path'] for item in result['directories'][0]['files']])
         self.assertEqual(4, result['total_bytes'])
         self.assertEqual('22.0', result['kodi_version'])
+
+    def test_skin_snapshot_uses_restore_path_and_validates_metadata(self):
+        payloads = {
+            '/stage/addon_data/skin.arctic.fuse.3/settings.xml': b'<settings />',
+            '/stage/addon_data/script.skinvariables/nodes/skin.arctic.fuse.3/main.json': b'{}',
+        }
+        snapshot_files = {
+            path[len('/stage/'):]: data for path, data in payloads.items()
+        }
+        metadata = {
+            'adapter_id': 'backup-pro.af3',
+            'adapter_version': 1,
+            'skin_id': 'skin.arctic.fuse.3',
+            'skin_version': '3.9.0',
+            'helper_id': 'script.skinvariables',
+            'helper_version': '2.2.1',
+            'source_device': 'MacBook',
+            'source_profile': 'Master',
+            'setting_count': 0,
+            'helper_file_count': 1,
+            'file_count': 2,
+            'total_bytes': sum(len(value) for value in payloads.values()),
+            'fingerprint': snapshot_fingerprint(snapshot_files),
+        }
+        result = build_manifest([{
+            'name': 'skin_config',
+            'source': '/stage',
+            'restore_path': 'special://profile/',
+            'plan_root': '/stage',
+            'files': [
+                {'file': path, 'is_dir': False} for path in payloads
+            ],
+        }], lambda path: (
+            hashlib.sha256(payloads[path]).hexdigest(), len(payloads[path])),
+            {'skin_config': metadata})
+
+        self.assertEqual('special://profile/', result['directories'][0]['path'])
+        self.assertEqual(metadata, result['skin_config'])
+
+        damaged = dict(result)
+        damaged['skin_config'] = dict(metadata, helper_file_count=2)
+        with self.assertRaises(ArchiveValidationError):
+            validate_manifest(damaged)
+
+    def test_skin_snapshot_directory_and_metadata_must_appear_together(self):
+        ordinary = manifest()
+        ordinary['skin_config'] = {}
+        with self.assertRaises(ArchiveValidationError):
+            validate_manifest(ordinary)
+
+        renamed = manifest()
+        renamed['directories'][0]['name'] = 'Skin_Config'
+        with self.assertRaises(ArchiveValidationError):
+            validate_manifest(renamed)
 
     def test_validates_and_recomputes_counts(self):
         result = validate_manifest(manifest())

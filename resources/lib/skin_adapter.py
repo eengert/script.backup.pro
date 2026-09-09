@@ -30,6 +30,7 @@ MAX_TOTAL_BYTES = 50 * 1024 * 1024
 _SKIN_ID = re.compile(r'^skin\.[A-Za-z0-9][A-Za-z0-9._-]{0,122}$')
 _SETTING_ID = re.compile(r'^[A-Za-z0-9_.-]{1,256}$')
 _SKIN_USER_SLUG = re.compile(r'^user-[0-9A-Za-z]+$')
+_SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 
 class SkinAdapterError(ValueError):
@@ -338,6 +339,91 @@ def snapshot_fingerprint(files):
     return digest.hexdigest()
 
 
+def managed_source_paths(files, skin_id=AF3_ID):
+    """Return profile paths owned by the adapter for generic-backup exclusion."""
+    validate_skin_id(skin_id)
+    if not isinstance(files, dict):
+        raise SkinAdapterError('skin adapter files must be a mapping')
+    roots = set()
+    nodes_prefix = 'addon_data/{}/nodes/'.format(SKIN_VARIABLES_ID)
+    logins_prefix = 'addon_data/{}/logins/{}/'.format(
+        SKIN_VARIABLES_ID, skin_id)
+    for path in files:
+        if path == _settings_path(skin_id) or path == _viewtypes_path(skin_id):
+            roots.add(path)
+        elif path.startswith(nodes_prefix):
+            parts = path.split('/')
+            if len(parts) < 5 or not path.endswith('.json'):
+                raise SkinAdapterError('invalid managed Skin Variables node path')
+            node_id = parts[3]
+            if node_id != skin_id:
+                prefix = skin_id + '-'
+                slug = node_id[len(prefix):] if node_id.startswith(prefix) else ''
+                if not _SKIN_USER_SLUG.fullmatch(slug):
+                    raise SkinAdapterError('invalid managed Skin Variables node path')
+            roots.add('/'.join(parts[:4]))
+        elif path.startswith(logins_prefix):
+            if not path.endswith('.json'):
+                raise SkinAdapterError('invalid managed Skin Variables login path')
+            roots.add(logins_prefix.rstrip('/'))
+        else:
+            raise SkinAdapterError('path is outside the AF3 adapter scope: ' + path)
+    return tuple(sorted(roots))
+
+
+def validate_snapshot_manifest(metadata, files):
+    """Validate untrusted AF3 metadata and manifest file records."""
+    if not isinstance(metadata, dict) or not isinstance(files, list):
+        raise SkinAdapterError('invalid AF3 snapshot manifest')
+    required = {
+        'adapter_id', 'adapter_version', 'skin_id', 'skin_version',
+        'helper_id', 'helper_version', 'source_device', 'source_profile',
+        'setting_count', 'helper_file_count', 'file_count', 'total_bytes',
+        'fingerprint',
+    }
+    if set(metadata) != required:
+        raise SkinAdapterError('invalid AF3 snapshot metadata fields')
+    if (metadata.get('adapter_id') != ADAPTER_ID
+            or metadata.get('adapter_version') != ADAPTER_VERSION
+            or metadata.get('skin_id') != AF3_ID
+            or metadata.get('helper_id') != SKIN_VARIABLES_ID):
+        raise SkinAdapterError('unsupported AF3 snapshot adapter')
+    for field in ('skin_version', 'helper_version', 'source_device',
+                  'source_profile'):
+        _metadata_text(metadata.get(field), field.replace('_', ' '))
+    for field, maximum in (('setting_count', MAX_SETTING_COUNT),
+                           ('helper_file_count', MAX_FILE_COUNT - 1),
+                           ('file_count', MAX_FILE_COUNT),
+                           ('total_bytes', MAX_TOTAL_BYTES)):
+        value = metadata.get(field)
+        if (not isinstance(value, int) or isinstance(value, bool)
+                or value < 0 or value > maximum):
+            raise SkinAdapterError('invalid AF3 snapshot ' + field)
+    fingerprint = metadata.get('fingerprint')
+    if not isinstance(fingerprint, str) or not _SHA256.fullmatch(fingerprint):
+        raise SkinAdapterError('invalid AF3 snapshot fingerprint')
+
+    paths = []
+    total_bytes = 0
+    for item in files:
+        if not isinstance(item, dict):
+            raise SkinAdapterError('invalid AF3 snapshot file record')
+        path = item.get('path')
+        size = item.get('size')
+        if not isinstance(path, str) or not isinstance(size, int):
+            raise SkinAdapterError('invalid AF3 snapshot file record')
+        paths.append(path)
+        total_bytes += size
+    managed_source_paths(dict.fromkeys(paths, b''), AF3_ID)
+    if _settings_path(AF3_ID) not in paths:
+        raise SkinAdapterError('AF3 snapshot is missing live settings')
+    if (metadata['file_count'] != len(files)
+            or metadata['helper_file_count'] != len(files) - 1
+            or metadata['total_bytes'] != total_bytes):
+        raise SkinAdapterError('AF3 snapshot metadata does not match its files')
+    return dict(metadata)
+
+
 def _metadata_text(value, name):
     if value is None:
         return ''
@@ -347,15 +433,23 @@ def _metadata_text(value, name):
 
 
 def capture_af3_snapshot(profile_path, rpc_call, source_device='',
-                         source_profile='', skin_version='', helper_version=''):
+                         source_profile='', skin_version='', helper_version='',
+                         settle=None):
     """Capture one stable AF3 configuration snapshot without mutating Kodi."""
     if not callable(rpc_call):
         raise SkinAdapterError('Kodi JSON-RPC reader is unavailable')
     first = live_skin_setting_values(rpc_call('Settings.GetSkinSettings'), AF3_ID)
+    first_helpers = collect_helper_files(profile_path, AF3_ID)
+    first_helper_fingerprint = snapshot_fingerprint(first_helpers)
+    if settle is not None:
+        if not callable(settle):
+            raise SkinAdapterError('skin capture settle callback is invalid')
+        settle()
     helpers = collect_helper_files(profile_path, AF3_ID)
     current = live_skin_setting_values(rpc_call('Settings.GetSkinSettings'), AF3_ID)
-    if not skin_settings_equal(first, current):
-        raise SkinAdapterError('skin settings changed while being collected')
+    if (not skin_settings_equal(first, current)
+            or first_helper_fingerprint != snapshot_fingerprint(helpers)):
+        raise SkinAdapterError('skin configuration changed while being collected')
 
     files = dict(helpers)
     files[_settings_path(AF3_ID)] = skin_settings_document(current)

@@ -114,3 +114,26 @@ Validation: 52 unit and bridge tests, Python compilation, XML parsing and Git
 whitespace checks passed. The adapter phase performed no Kodi-profile or Apple
 TV writes; runtime staging and restore mutation remain transactional-restore
 work.
+
+## Phase 6 - AF3 archive bridge
+
+- Added an opt-in AF3 configuration setting and captured the stable adapter
+  snapshot twice across a quiet period before generic profile enumeration.
+- Materializes the in-memory snapshot only in a bounded Backup Pro staging
+  directory and always removes that directory when the backup exits.
+- Publishes the snapshot as a distinct `skin_config` archive group whose
+  destination is `special://profile/`, while keeping the temporary staging path
+  out of the portable manifest.
+- Excludes adapter-owned settings, node, login and viewtype paths from
+  overlapping generic Add-on Data copies, and keeps those measured exclusions
+  alongside TMDb Helper cache exclusions.
+- Requires snapshot metadata and payloads to appear together and validates the
+  adapter identity, versions, source labels, counts, bytes and managed path
+  scope on archive read.
+- Blocks generic `skin_config` restoration in this development checkpoint so
+  it cannot bypass the pending transactional skin-switch, rollback and recovery
+  handler.
+
+Validation: 58 unit and bridge tests, Python compilation, XML parsing and Git
+whitespace checks passed. All write-path tests used temporary directories. No
+Kodi profile or Apple TV was modified.

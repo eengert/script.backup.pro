@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.6.0
+
+### Added
+
+- Opt-in **Back up Arctic Fuse 3 configuration** setting.
+- Staged `skin_config` archive group with validated source/profile and component
+  metadata.
+
+### Changed
+
+- Paths owned by the AF3 adapter are measured and excluded from overlapping
+  generic Add-on Data copies.
+- Temporary skin snapshots are removed after successful, failed or cancelled
+  backups.
+
+### Security
+
+- Backup Pro manifests require AF3 metadata and `skin_config` payloads to
+  appear together with matching path, count and size constraints.
+- Generic live-file restore of `skin_config` is blocked until the transactional
+  restore handler is available.
+
 ## Version 0.5.0
 
 ### Added
