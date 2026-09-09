@@ -11,7 +11,7 @@ the same destination unless duplicate runs are intentional.
 
 ## Project status
 
-Version 0.9.7 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
+Version 0.9.8 adds opt-in Arctic Fuse 3 snapshots to the measured planning,
 cache-exclusion and verified-archive foundation. It captures Kodi's live typed
 skin settings and only the proven Script Skin Variables source JSON needed for
 rebuilding AF3. Managed source paths are omitted from the generic Add-on Data
@@ -40,7 +40,10 @@ verified action plan and unique completion token, validates generated include
 XML before and after a synchronous skin reload, and refreshes restored node
 caches. The restore selector now routes AF3 configuration by itself through the
 verified preflight, staging, interactive skin-confirmation and completion path;
-every restore closes its VFS/progress resources. Exact rollback completion now
+every restore closes its VFS/progress resources. Interrupted forward staging
+can now resume after a committed transaction or failed VFS settings write,
+after revalidating every managed file against pending state. Exact rollback
+completion now
 restores prior files and appearance, rebuilds AF3 and verifies the independent
 undo target before clearing state. Recovery-focused menus, final UX integration
 and artwork remain planned. See

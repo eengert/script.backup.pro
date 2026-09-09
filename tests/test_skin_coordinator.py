@@ -357,6 +357,73 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertEqual(len(pending['skin_settings']),
                          result['setting_count'])
 
+    def test_resume_staging_after_crash_post_transaction_commit(self):
+        real_write = skin_coordinator.write_pending_state
+
+        def fail_after_commit(path, record):
+            if record['phase'] == 'files_applied':
+                raise KeyboardInterrupt('crash after transaction')
+            return real_write(path, record)
+
+        with mock.patch.object(
+                skin_coordinator, 'write_pending_state',
+                side_effect=fail_after_commit):
+            with self.assertRaises(KeyboardInterrupt):
+                self.stage(FakeHost())
+        self.assertEqual('resume_staging',
+                         skin_coordinator.inspect_pending_restore(
+                             self.profile, self.rollback,
+                             self.state)['action'])
+        host = FakeHost()
+
+        pending = skin_coordinator.resume_skin_restore_staging(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual('rebuild', pending['phase'])
+        self.assertEqual('finish_rebuild',
+                         skin_coordinator.inspect_pending_restore(
+                             self.profile, self.rollback,
+                             self.state)['action'])
+        self.assertIn('stage_settings', [event[0] for event in host.events])
+
+    def test_resume_staging_rejects_changed_committed_files(self):
+        real_write = skin_coordinator.write_pending_state
+
+        def fail_after_commit(path, record):
+            if record['phase'] == 'files_applied':
+                raise KeyboardInterrupt('crash after transaction')
+            return real_write(path, record)
+
+        with mock.patch.object(
+                skin_coordinator, 'write_pending_state',
+                side_effect=fail_after_commit):
+            with self.assertRaises(KeyboardInterrupt):
+                self.stage(FakeHost())
+        helper = next(path for path in self.files if path != SETTINGS_PATH)
+        (self.profile / helper).write_bytes(b'changed')
+        host = FakeHost()
+
+        with self.assertRaisesRegex(
+                skin_coordinator.SkinCoordinatorError, 'no longer'):
+            skin_coordinator.resume_skin_restore_staging(
+                self.profile, self.rollback, self.state, host)
+        self.assertEqual([], host.events)
+
+    def test_resume_restages_settings_after_vfs_failure(self):
+        with self.assertRaises(RuntimeError):
+            self.stage(FakeHost(fail='stage_settings'))
+        self.assertEqual('restage_settings',
+                         skin_coordinator.inspect_pending_restore(
+                             self.profile, self.rollback,
+                             self.state)['action'])
+        host = FakeHost()
+
+        pending = skin_coordinator.resume_skin_restore_staging(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual('rebuild', pending['phase'])
+        self.assertIn('stage_settings', [event[0] for event in host.events])
+
     def test_finish_failure_preserves_pending_and_completed_rollback(self):
         host = FakeHost()
         pending = self.stage(host)

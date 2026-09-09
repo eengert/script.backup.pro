@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.8
+
+### Added
+
+- Crash-safe forward staging resume after a committed file transaction or a
+  failed Kodi VFS settings write.
+
+### Security
+
+- Revalidates every current managed AF3 file against the pending manifest
+  before resuming staging and refuses changed or invalid data before host
+  effects.
+
 ## Version 0.9.7
 
 ### Added

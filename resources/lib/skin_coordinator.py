@@ -245,6 +245,63 @@ def _verify_helper_sources(profile_path, expected):
             'restored AF3 helper sources did not remain applied')
 
 
+def _read_verified_forward_files(profile_path, pending):
+    files = read_current_managed_files(profile_path, AF3_ID)
+    try:
+        checked = validate_snapshot_files(files, AF3_ID)
+    except Exception as error:
+        raise SkinCoordinatorError(
+            'staged AF3 files are no longer valid') from error
+    expected = {
+        item['path']: (item['size'], item['sha256'])
+        for item in pending['files']
+    }
+    actual = {
+        path: (len(data), hashlib.sha256(data).hexdigest())
+        for path, data in checked.items()
+    }
+    if actual != expected:
+        raise SkinCoordinatorError(
+            'staged AF3 files no longer match pending state')
+    return checked
+
+
+def resume_skin_restore_staging(
+        profile_path, rollback_root, pending_path, host):
+    """Resume a committed AF3 transaction through the rebuild checkpoint."""
+    with _operation_lock(pending_path):
+        action = inspect_pending_restore(
+            profile_path, rollback_root, pending_path)
+        if action['action'] not in ('resume_staging', 'restage_settings'):
+            raise SkinCoordinatorError(
+                'pending skin restore is not ready to resume staging')
+        pending = read_pending_state(pending_path)
+        files = _read_verified_forward_files(profile_path, pending)
+
+        _call(host, 'ensure_dependencies', AF3_ID, SKIN_VARIABLES_ID)
+        _progress(host, 15, 'Stopping playback')
+        _call(host, 'stop_playback')
+        if _call(host, 'is_playing'):
+            raise SkinCoordinatorError(
+                'playback did not stop before resuming skin restore')
+        _progress(host, 30, 'Activating a safe skin')
+        _call(host, 'ensure_inactive', AF3_ID)
+        if _call(host, 'active_skin') == AF3_ID:
+            raise SkinCoordinatorError('target skin is still active')
+
+        if action['action'] == 'resume_staging':
+            pending = write_pending_state(
+                pending_path,
+                advance_pending_restore(pending, 'files_applied'))
+        _progress(host, 65, 'Restaging AF3 settings through Kodi')
+        _call(host, 'stage_settings', AF3_ID, files[SETTINGS_PATH],
+              pending['skin_settings'])
+        pending = write_pending_state(
+            pending_path, advance_pending_restore(pending, 'rebuild'))
+        _progress(host, 100, 'AF3 restore staging resumed')
+        return pending
+
+
 def finish_skin_restore(profile_path, rollback_root, pending_path, host):
     """Activate, rebuild and verify a staged AF3 restore before clearing it."""
     with _operation_lock(pending_path):

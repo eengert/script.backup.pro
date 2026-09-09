@@ -53,6 +53,16 @@
 - Deferred rollback completion until schema v3 can durably describe the
   previous settings, helper files and appearance separately from the archive.
 
+## Phase 7B6c - Verified forward-staging resume
+
+- Added a lock-serialized resume operation for crashes after transaction commit
+  and failures while staging settings through Kodi VFS.
+- Revalidates the complete current managed-file set against pending sizes and
+  hashes before any host effects.
+- Re-establishes playback and inactive-skin postconditions, persists the
+  missing `files_applied` checkpoint when needed and reaches `rebuild` only
+  after Kodi accepts the verified settings document.
+
 ## Phase 7B6b - Exact AF3 rollback coordinator
 
 - Added a lock-serialized rollback path that persists `rollback_rebuild`
