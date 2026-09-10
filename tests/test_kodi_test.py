@@ -182,6 +182,43 @@ class KodiHarnessTests(unittest.TestCase):
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
              MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
 
+    def test_install_skin_copies_the_skin_and_its_own_dependencies(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+                fake_real_addons = d / "fake-real-profile" / "addons"
+
+                skin_dir = fake_real_addons / "skin.example"
+                skin_dir.mkdir(parents=True)
+                (skin_dir / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.skinhelper" version="1.0.0"/>'
+                    '</requires></addon>')
+
+                helper_dir = fake_real_addons / "script.module.skinhelper"
+                helper_dir.mkdir()
+                (helper_dir / "marker.py").write_text("# skin helper\n")
+                (helper_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
+
+                MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile"
+
+                installed = MODULE.install_skin("skin.example")
+                self.assertEqual(
+                    set(installed), {"skin.example", "script.module.skinhelper"})
+                self.assertTrue(
+                    (MODULE.KODI_ADDONS_DIR / "skin.example" / "addon.xml").exists())
+                self.assertTrue((MODULE.KODI_ADDONS_DIR / "script.module.skinhelper"
+                                  / "marker.py").exists())
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
+
     def test_install_dependencies_refuses_a_dependency_missing_from_the_real_profile(self):
         old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
                MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
@@ -290,6 +327,30 @@ class KodiHarnessTests(unittest.TestCase):
                     '<setting id="services.webserverauthentication">true</setting>', text)
                 self.assertIn('<setting id="services.webserverusername">u</setting>', text)
                 self.assertIn('<setting id="services.webserverpassword">p</setting>', text)
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.KODI_GUISETTINGS_FILE) = old
+
+    def test_configure_webserver_folds_in_extra_settings(self):
+        # needed so a caller can activate a skin (lookandfeel.skin) in
+        # the SAME pre-launch write as the webserver settings, since
+        # configure_webserver() can only be called once per fresh
+        # profile.
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.KODI_GUISETTINGS_FILE)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                MODULE.KODI_GUISETTINGS_FILE = MODULE.KODI_USERDATA_DIR / "guisettings.xml"
+                MODULE.configure_webserver(
+                    port=1234, username="u", password="p",
+                    extra_settings={"lookandfeel.skin": "skin.example"})
+                text = MODULE.KODI_GUISETTINGS_FILE.read_text(encoding="utf-8")
+                self.assertIn('<setting id="services.webserver">true</setting>', text)
+                self.assertIn(
+                    '<setting id="lookandfeel.skin">skin.example</setting>', text)
         finally:
             (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,

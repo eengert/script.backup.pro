@@ -49,16 +49,26 @@ this.
 With dependencies resolved, a triggered `mode=backup` run (2026-09-10)
 got all the way to `XbmcBackup._createValidationFile()` before failing
 - proving the trigger mechanism works end-to-end, not just that Kodi's
-API accepted the call. The failure itself is a real Backup Pro
-production bug, not a harness or dependency issue:
-`resources/lib/archive.py::sha256_reader()` assumes `read_chunk()`
-returns `bytes` or `str` and calls `.encode('utf-8')` on anything else,
-but this Kodi 21.1 build's `xbmcvfs.File.read()` returns `bytearray`,
-which has no `.encode()` method - confirmed via the exact log line
-`Unable to create Backup Pro manifest: 'bytearray' object has no
-attribute 'encode'`. Not fixed here (production code, a separately
-scoped task). See docs/MAC_KODI_VALIDATION.md → "Evidence and
-automation boundary" for the full picture.
+API accepted the call. The failure was a real Backup Pro production
+bug, not a harness or dependency issue:
+`resources/lib/archive.py::sha256_reader()` assumed `read_chunk()`
+returns `bytes` or `str` and called `.encode('utf-8')` on anything
+else, but this Kodi 21.1 build's `xbmcvfs.File.read()` returns
+`bytearray`, which has no `.encode()` method. Fixed (commit
+`22c914c`); a triggered backup now completes and its manifest was
+inspected directly (correct addon/Kodi version, correct exclusions,
+hashed files) - Phase 9a step 5 is proven done.
+
+`install_skin()` (built on the same `_copy_addon_closure()` used by
+`install_dependencies()`) copies a skin add-on - default Arctic Fuse 3
+- into the disposable profile for step 4+: Backup Pro's AF3 capture is
+gated on `xbmc.getSkinDir() == AF3_ID`, so AF3 must actually be the
+*active* skin, not merely present. `configure_webserver()`'s
+`extra_settings` lets a caller set `lookandfeel.skin` in the same
+pre-launch write as the webserver settings (it can only be called once
+per fresh profile). See docs/MAC_KODI_VALIDATION.md → "Evidence and
+automation boundary" for the full picture and what has/hasn't been
+proven for AF3 specifically.
 """
 from __future__ import annotations
 
@@ -87,6 +97,7 @@ KODI_GUISETTINGS_FILE = KODI_USERDATA_DIR / "guisettings.xml"
 PID_FILE = ROOT / "kodi.pid"
 KODI = Path("/Applications/Kodi.app/Contents/MacOS/Kodi")
 ADDON_ID = "script.backup.pro"
+AF3_SKIN_ID = "skin.arctic.fuse.3"
 WEBSERVER_PORT = 8899
 WEBSERVER_USERNAME = "kodi-test"
 WEBSERVER_PASSWORD = "kodi-test-only"
@@ -233,40 +244,61 @@ def _declared_dependencies(source: Path = PROJECT) -> list[str]:
             if el.get("addon") != "xbmc.python"]
 
 
+def _copy_addon_closure(seed_ids: list[str]) -> list[str]:
+    """Copy each of seed_ids - and every add-on any of them declares as
+    a dependency, transitively - from the real, normal Kodi profile
+    into the disposable profile: read-only from the real profile,
+    confined write to the disposable profile only. Refuses a missing
+    add-on or a symlinked source. Shared by install_dependencies() and
+    install_skin(); both need the same "copy this and everything it
+    transitively needs" behavior."""
+    verify_isolation()
+    installed = []
+    seen: set[str] = set()
+    pending = list(seed_ids)
+    while pending:
+        addon_id = pending.pop(0)
+        if addon_id in seen:
+            continue
+        seen.add(addon_id)
+        real_source = NORMAL_APPDATA_DIR / "addons" / addon_id
+        if not real_source.is_dir():
+            raise RuntimeError(
+                f"add-on not found in the real Kodi profile: {addon_id}")
+        if real_source.is_symlink():
+            raise RuntimeError(f"symlink is not allowed: {real_source}")
+        destination = KODI_ADDONS_DIR / addon_id
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(real_source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+        installed.append(addon_id)
+        pending.extend(_declared_dependencies(real_source))
+    return installed
+
+
 def install_dependencies(source: Path = PROJECT) -> list[str]:
     """Copy every add-on Backup Pro's addon.xml declares as a
     dependency - and every dependency of those dependencies,
     transitively - from the real, normal Kodi profile into the
-    disposable profile: read-only from the real profile, confined write
-    to the disposable profile only. install() only copies Backup Pro's
-    own files; without this, a triggered run fails with
-    ModuleNotFoundError, first on Backup Pro's own direct dependencies
-    and then, once those are present, on a transitive one
-    (script.module.dropbox needs script.module.requests, which is not
-    declared in Backup Pro's own addon.xml) - both confirmed empirically
-    2026-09-10, see docs/MAC_KODI_VALIDATION.md."""
-    verify_isolation()
-    installed = []
-    seen: set[str] = set()
-    pending = list(_declared_dependencies(source))
-    while pending:
-        dependency_id = pending.pop(0)
-        if dependency_id in seen:
-            continue
-        seen.add(dependency_id)
-        real_source = NORMAL_APPDATA_DIR / "addons" / dependency_id
-        if not real_source.is_dir():
-            raise RuntimeError(
-                f"dependency add-on not found in the real Kodi profile: {dependency_id}")
-        if real_source.is_symlink():
-            raise RuntimeError(f"symlink is not allowed: {real_source}")
-        destination = KODI_ADDONS_DIR / dependency_id
-        if destination.exists():
-            shutil.rmtree(destination)
-        shutil.copytree(real_source, destination, ignore=shutil.ignore_patterns("__pycache__"))
-        installed.append(dependency_id)
-        pending.extend(_declared_dependencies(real_source))
-    return installed
+    disposable profile. install() only copies Backup Pro's own files;
+    without this, a triggered run fails with ModuleNotFoundError, first
+    on Backup Pro's own direct dependencies and then, once those are
+    present, on a transitive one (script.module.dropbox needs
+    script.module.requests, which is not declared in Backup Pro's own
+    addon.xml) - both confirmed empirically 2026-09-10, see
+    docs/MAC_KODI_VALIDATION.md."""
+    return _copy_addon_closure(_declared_dependencies(source))
+
+
+def install_skin(skin_id: str = AF3_SKIN_ID) -> list[str]:
+    """Copy a skin add-on (default: Arctic Fuse 3) and its own
+    transitive dependencies from the real, normal Kodi profile into the
+    disposable profile. Needed for Phase 9a step 4+: Backup Pro's AF3
+    capture is gated on xbmc.getSkinDir() == AF3_ID (see
+    resources/lib/backup.py), so AF3 must actually be present - and, via
+    configure_webserver()'s extra_settings, made the active skin - not
+    merely installed alongside it."""
+    return _copy_addon_closure([skin_id])
 
 
 def configure(addon_id: str, values: dict[str, str]) -> None:
@@ -288,13 +320,18 @@ def configure(addon_id: str, values: dict[str, str]) -> None:
 
 
 def configure_webserver(port: int = WEBSERVER_PORT, username: str = WEBSERVER_USERNAME,
-                         password: str = WEBSERVER_PASSWORD) -> None:
+                         password: str = WEBSERVER_PASSWORD,
+                         extra_settings: dict[str, str] | None = None) -> None:
     """Enable Kodi's built-in webserver (needed for JSON-RPC over HTTP)
     inside the disposable profile only, with authentication always on.
-    Fails closed: refuses if guisettings.xml already exists, since a
-    safe partial merge of an already-populated core-settings file isn't
-    implemented here - always call this immediately after init()/reset(),
-    before the disposable profile's first launch."""
+    extra_settings lets a caller fold in other core (guisettings.xml)
+    settings in the SAME write - e.g. {"lookandfeel.skin": AF3_SKIN_ID}
+    to make a skin active - since this only supports a fresh profile
+    and cannot be called twice. Fails closed: refuses if guisettings.xml
+    already exists, since a safe partial merge of an already-populated
+    core-settings file isn't implemented here - always call this
+    immediately after init()/reset(), before the disposable profile's
+    first launch."""
     verify_isolation()
     if not password:
         raise RuntimeError("a webserver password is required")
@@ -311,6 +348,8 @@ def configure_webserver(port: int = WEBSERVER_PORT, username: str = WEBSERVER_US
         "services.webserverusername": username,
         "services.webserverpassword": password,
     }
+    if extra_settings:
+        values.update({key: str(value) for key, value in extra_settings.items()})
     lines = ['<settings version="2">']
     for key, value in values.items():
         lines.append(f'    <setting id="{_xml_escape(key)}">{_xml_escape(str(value))}</setting>')
@@ -368,10 +407,14 @@ def main(argv: list[str]) -> int:
     p.add_argument("source", nargs="?", type=Path, default=PROJECT)
     p = sub.add_parser("install-dependencies")
     p.add_argument("source", nargs="?", type=Path, default=PROJECT)
+    p = sub.add_parser("install-skin")
+    p.add_argument("skin_id", nargs="?", default=AF3_SKIN_ID)
     p = sub.add_parser("configure")
     p.add_argument("addon_id")
     p.add_argument("settings", nargs="+", help="key=value pairs")
-    sub.add_parser("enable-webserver")
+    p = sub.add_parser("enable-webserver")
+    p.add_argument("--skin", default=None,
+                    help="also set this skin as active (lookandfeel.skin)")
     p = sub.add_parser("jsonrpc")
     p.add_argument("method")
     p.add_argument("params", nargs="?", type=json.loads, default=None,
@@ -393,12 +436,15 @@ def main(argv: list[str]) -> int:
         elif args.command == "install": install(args.source); result = status()
         elif args.command == "install-dependencies":
             result = {"installed": install_dependencies(args.source)}
+        elif args.command == "install-skin":
+            result = {"installed": install_skin(args.skin_id)}
         elif args.command == "configure":
             values = dict(item.split("=", 1) for item in args.settings)
             configure(args.addon_id, values)
             result = status()
         elif args.command == "enable-webserver":
-            configure_webserver()
+            extra = {"lookandfeel.skin": args.skin} if args.skin else None
+            configure_webserver(extra_settings=extra)
             result = status()
         elif args.command == "jsonrpc":
             result = jsonrpc(args.method, args.params)
