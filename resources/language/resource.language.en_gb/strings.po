@@ -673,3 +673,23 @@ msgstr ""
 msgctxt "#30167"
 msgid "Captures live skin settings and managed Skin Variables source data; Arctic Fuse 3 must be active"
 msgstr ""
+
+msgctxt "#30168"
+msgid "Backup complete and verified"
+msgstr ""
+
+msgctxt "#30169"
+msgid "files backed up"
+msgstr ""
+
+msgctxt "#30170"
+msgid "excluded"
+msgstr ""
+
+msgctxt "#30171"
+msgid "TMDb Helper cache excluded; regenerates automatically"
+msgstr ""
+
+msgctxt "#30172"
+msgid "Arctic Fuse 3 configuration included for recovery"
+msgstr ""

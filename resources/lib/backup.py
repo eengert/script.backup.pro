@@ -25,6 +25,7 @@ from resources.lib.archive import (
 from resources.lib.planning import (
     FilePlanner,
     TMDB_HELPER_ID,
+    describe_backup_plan,
     summarize_file_groups,
     tmdb_helper_cache_exclusions,
 )
@@ -1122,6 +1123,7 @@ class XbmcBackup:
             if self._rotateBackups() is False:
                 utils.showNotification(utils.getString(30092))
                 return False
+            utils.showNotification(self._backupCompletionMessage())
             return True
         if artifact_path:
             if compressed:
@@ -1131,6 +1133,28 @@ class XbmcBackup:
         self._active_artifact = None
         utils.showNotification(utils.getString(30092))
         return False
+
+    def _backupCompletionMessage(self):
+        """Clear included/excluded counts, sizes, cache-regeneration
+        explanation, and recovery availability for a completed backup.
+        Only reached after verification already passed (see
+        _runBackup()), so completion implies verified.
+        """
+        description = describe_backup_plan(
+            getattr(self, 'backup_plan', None) or {})
+        parts = [utils.getString(30168)]
+        parts.append('%d %s (%s)' % (
+            description['included_files'], utils.getString(30169),
+            utils.diskString(description['included_kib'] * 1024)))
+        if description['excluded_files']:
+            parts.append('%d %s (%s)' % (
+                description['excluded_files'], utils.getString(30170),
+                utils.diskString(description['excluded_kib'] * 1024)))
+        if description['tmdb_cache_excluded_files']:
+            parts.append(utils.getString(30171))
+        if getattr(self, '_skin_snapshot_metadata', None) is not None:
+            parts.append(utils.getString(30172))
+        return ' | '.join(parts)
 
     def _discardActiveArtifact(self):
         artifact = getattr(self, '_active_artifact', None)

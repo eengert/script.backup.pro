@@ -313,3 +313,27 @@ def summarize_file_groups(groups, largest_limit=10):
         'largest_directories': directories[:largest_limit],
         'exclusions': exclusions,
     }
+
+
+def describe_backup_plan(plan):
+    """Reduce a summarize_file_groups() plan to the values a completion
+    summary needs, breaking exclusions down by adapter so the caller can
+    explain *why* something was excluded (regenerable cache vs. a
+    separately-managed source) rather than only reporting a raw count.
+    Kept Kodi-independent and pure so it is directly unit-testable.
+    """
+    tmdb_excluded_kib = 0.0
+    tmdb_excluded_files = 0
+    for exclusion in plan.get('exclusions', []):
+        if exclusion.get('adapter') == TMDB_HELPER_ID:
+            tmdb_excluded_kib += float(exclusion.get('size_kib', 0.0))
+            tmdb_excluded_files += int(exclusion.get('file_count', 0))
+
+    return {
+        'included_files': int(plan.get('file_count', 0)),
+        'included_kib': float(plan.get('total_kib', 0.0)),
+        'excluded_files': int(plan.get('excluded_files', 0)),
+        'excluded_kib': float(plan.get('excluded_kib', 0.0)),
+        'tmdb_cache_excluded_files': tmdb_excluded_files,
+        'tmdb_cache_excluded_kib': tmdb_excluded_kib,
+    }

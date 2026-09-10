@@ -5,6 +5,8 @@ import unittest
 from resources.lib.planning import (
     FilePlanner,
     PlanningError,
+    TMDB_HELPER_ID,
+    describe_backup_plan,
     normalize_path,
     join_path,
     path_is_within,
@@ -146,6 +148,67 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(1, len(planner.getFiles()))
         self.assertEqual(0, planner.totalFiles())
         self.assertEqual(0, planner.fileSize())
+
+    def test_describe_backup_plan_breaks_out_tmdb_cache_exclusions(self):
+        planner = FilePlanner(self.vfs)
+        planner.addDir({'type': 'include', 'path': self.root, 'recurse': True})
+        for rule in tmdb_helper_cache_exclusions(self.tmdb):
+            planner.addDir(rule)
+        planner.walk()
+        summary = planner.summary()
+        group = {
+            'name': 'addon_data',
+            'source': 'special://home/userdata/addon_data',
+            'plan_root': self.root,
+            'files': list(planner.fileArray),
+            'summary': summary,
+        }
+        plan = summarize_file_groups([group])
+
+        description = describe_backup_plan(plan)
+
+        self.assertEqual(3, description['included_files'])
+        self.assertEqual(91, description['included_kib'])
+        self.assertEqual(4, description['excluded_files'])
+        self.assertEqual(120, description['excluded_kib'])
+        self.assertEqual(4, description['tmdb_cache_excluded_files'])
+        self.assertEqual(120, description['tmdb_cache_excluded_kib'])
+
+    def test_describe_backup_plan_excludes_non_tmdb_adapters_from_cache_total(self):
+        plan = {
+            'file_count': 10,
+            'total_kib': 200,
+            'excluded_files': 2,
+            'excluded_kib': 50,
+            'exclusions': [
+                {'adapter': 'script.skinvariables', 'size_kib': 50,
+                 'file_count': 2},
+            ],
+        }
+
+        description = describe_backup_plan(plan)
+
+        self.assertEqual(0, description['tmdb_cache_excluded_files'])
+        self.assertEqual(0.0, description['tmdb_cache_excluded_kib'])
+        self.assertEqual(2, description['excluded_files'])
+        self.assertEqual(50, description['excluded_kib'])
+
+    def test_describe_backup_plan_handles_no_exclusions(self):
+        plan = {'file_count': 5, 'total_kib': 12.5}
+
+        description = describe_backup_plan(plan)
+
+        self.assertEqual(5, description['included_files'])
+        self.assertEqual(12.5, description['included_kib'])
+        self.assertEqual(0, description['excluded_files'])
+        self.assertEqual(0.0, description['excluded_kib'])
+        self.assertEqual(0, description['tmdb_cache_excluded_files'])
+        self.assertEqual(0.0, description['tmdb_cache_excluded_kib'])
+
+    def test_tmdb_helper_id_constant_matches_planning_adapter_tag(self):
+        # describe_backup_plan() filters by this exact constant -- guard
+        # against it and tmdb_helper_cache_exclusions() drifting apart.
+        self.assertEqual('plugin.video.themoviedb.helper', TMDB_HELPER_ID)
 
 
 if __name__ == '__main__':

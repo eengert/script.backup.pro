@@ -649,6 +649,75 @@ class BackupBridgeTests(unittest.TestCase):
         finally:
             backup_module.utils.showNotification = original_notification
 
+    def test_finalize_backup_notifies_a_clear_completion_summary(self):
+        class Remote:
+            def rmfile(self, _path):
+                return True
+
+            def rmdir(self, _path):
+                return True
+
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = Remote()
+        instance._rotateBackups = lambda: True
+        instance.backup_plan = {
+            'file_count': 42,
+            'total_kib': 100,
+            'excluded_files': 3,
+            'excluded_kib': 50,
+            'exclusions': [
+                {'adapter': 'plugin.video.themoviedb.helper',
+                 'size_kib': 50, 'file_count': 3},
+            ],
+        }
+        instance._skin_snapshot_metadata = {'appearance': {}}
+        notifications = []
+        original_notification = backup_module.utils.showNotification
+        backup_module.utils.showNotification = notifications.append
+        try:
+            self.assertTrue(instance._finalizeBackup(
+                True, '/backup/', compressed=False))
+        finally:
+            backup_module.utils.showNotification = original_notification
+
+        self.assertEqual(1, len(notifications))
+        message = notifications[0]
+        self.assertIn('42', message)
+        self.assertIn('3', message)
+        # the FakeAddon stub's getLocalizedString() returns the numeric
+        # string id rather than real English text (see install_kodi_stubs
+        # in this file), so assert on the ids these getString() calls
+        # resolve to rather than their real-world English copy.
+        self.assertIn('30171', message)  # TMDb Helper cache excluded
+        self.assertIn('30172', message)  # AF3 configuration included
+
+    def test_finalize_backup_summary_omits_optional_parts_when_absent(self):
+        class Remote:
+            def rmfile(self, _path):
+                return True
+
+            def rmdir(self, _path):
+                return True
+
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = Remote()
+        instance._rotateBackups = lambda: True
+        instance.backup_plan = {'file_count': 5, 'total_kib': 10}
+        instance._skin_snapshot_metadata = None
+        notifications = []
+        original_notification = backup_module.utils.showNotification
+        backup_module.utils.showNotification = notifications.append
+        try:
+            self.assertTrue(instance._finalizeBackup(
+                True, '/backup/', compressed=False))
+        finally:
+            backup_module.utils.showNotification = original_notification
+
+        message = notifications[0]
+        self.assertNotIn('30171', message)
+        self.assertNotIn('30172', message)
+        self.assertNotIn('30170', message)
+
     def test_backup_wrapper_always_closes_after_failure(self):
         instance = object.__new__(XbmcBackup)
         instance._vfs_closed = False
