@@ -107,11 +107,16 @@ add-on's own declared default, exactly like a real, untouched install.
 - This confirms the isolation mechanism (HOME override + disposable root)
   actually works end-to-end on this Mac, not just in unit tests.
 - Since this was written, installing and running Backup Pro, capturing AF3
-  state, creating a real backup, and triggering a restore up to its
-  confirmation prompt have all been proven live — see "Phase 9 validation
-  procedure and current status" below for the current, accurate picture.
-  **Still not proven**: anything past Phase 9b's confirmation prompts
-  (steps 8-9 below).
+  state, creating a real backup, and accepting a restore's confirmation
+  prompts (deterministically, via Kodi's own JSON-RPC `Input.*`
+  primitives — no human input needed) have all been proven live — see
+  "Phase 9 validation procedure and current status" below for the
+  current, accurate picture. **Still not proven**: whether
+  `finish_skin_restore()`'s AF3 menu/widget rebuild step
+  (`rebuild_skin()`) actually completes in this harness — it hung for
+  85+ seconds past its own 60s internal timeout in the one live attempt
+  so far, a genuine unresolved issue unrelated to dialog automation (see
+  step 8 below).
 
 ## Phase 9 validation procedure and current status
 
@@ -127,22 +132,41 @@ The Phase 9 validation scenario:
 5. **Complete/proven.** Capture known AF3 settings/appearance/helper state.
 6. **Complete/proven.** Create a Backup Pro archive and inspect its manifest,
    sizes, hashes and exclusions.
-7. **Partially proven (2026-09-10).** Changing only the disposable profile
-   and triggering a restore up to the point of the skin confirmation prompt
-   are proven: a scripted `Settings.SetSettingValue` changed
-   `lookandfeel.skincolors` on the live disposable profile, a triggered
-   `mode=restore` reached exactly the expected blocking dialog (confirmed
-   objectively via `Window.IsActive(yesnodialog)` and
-   `Control.GetLabel(1)` == `"Restore Arctic Fuse 3 configuration"`,
-   matching `_restoreSkinConfig()`'s own dialog text), and no partial state
-   (`pending-skin-restore.json`, `skin-rollback/`) existed before the
-   instance was stopped without accepting it. **Accepting the prompt and
-   verifying live values/hashes/rebuilt data afterward remain Phase 9b
-   (human-only)** — not attempted.
-8. **Remaining — depends on Phase 9b accepting the prompt in step 7.**
-   Restart Kodi and repeat the verification.
-9. **Remaining — depends on Phase 9b.** Exercise pending-recovery/rollback
-   and compare installed/package files.
+7. **Complete/proven, corrected (2026-09-10).** Changing the disposable
+   profile, triggering a restore, and **accepting both of its
+   confirmation dialogs** are all proven — this step was previously
+   marked "done up to the prompt" with the prompt itself wrongly
+   classified as Phase 9b human-only; re-evaluated and found incorrect
+   (see "Evidence and automation boundary" below for the exact
+   mechanism). A scripted `Settings.SetSettingValue` changed
+   `lookandfeel.skincolors`; a triggered `mode=restore` reached the
+   expected `"Restore Arctic Fuse 3 configuration"` dialog
+   (`Window.IsActive(yesnodialog)`, `Control.GetLabel(1)`); `Input.Up` +
+   `Input.Select` accepted it, producing `pending-skin-restore.json`
+   with `"phase":"prepared"`; the follow-up `"AF3 files are staged
+   safely..."` OK dialog was accepted the same way, advancing to
+   `"phase":"rebuild"` and invoking `finish_skin_restore()`.
+8. **Attempted, blocked on a real (non-dialog) issue (2026-09-10).**
+   `finish_skin_restore()`'s `rebuild_skin()` call — which drives
+   `script.skinvariables` via `RunScript(...)` and polls for a
+   completion property — did not finish within its own 60s timeout;
+   the pending state stayed at `"phase":"rebuild"` for 85+ seconds, and
+   an unrelated `XBMC.GetInfoBooleans` check issued independently over
+   JSON-RPC also timed out during the hang, indicating the GUI/
+   info-manager thread was genuinely wedged, not just this one script's
+   retry loop. `stop` still worked immediately. This needs dedicated
+   debugging (not a confirmation choice) and is the actual current
+   blocker — restarting Kodi and repeating verification depends on this
+   being root-caused first.
+9. **Reachable, blocked on the same issue as step 8 (2026-09-10).**
+   Relaunching with the stuck `"phase":"rebuild"` state still present and
+   triggering the add-on with no `mode` correctly surfaced
+   `resolvePendingSkinRestore()`'s own recovery-choice dialog
+   (`Window.IsActive(selectdialog)`, `"A pending Arctic Fuse 3 restore
+   needs your attention"`) — proving that prompt is reachable
+   non-interactively too. Not exercised further: `rollback_skin_restore()`
+   calls the same `rebuild_skin()` that hung in step 8, so either choice
+   was expected to reproduce it.
 10. **Cleanup/reset, as applicable.** Preserve machine-verifiable results,
     then reset or discard only the disposable profile.
 
@@ -160,12 +184,66 @@ Python/unit/package checks; ZIP and manifest inspection; profile-local file
 hashes; archive creation; controlled profile-local setup; process/log/status
 inspection; restart commands; and objective before/after state comparisons.
 
-Human judgment remains required for any ambiguous path or permission prompt,
-visual skin/layout appearance, whether a skin confirmation prompt is correct,
-unavailable credentials, and any failure that threatens a non-disposable
-profile. Phase 9 cannot be marked complete from unit tests alone — the harness
-launch/stop proof above is harness validation, not a Phase 9 result, and Phase
-9 is not marked complete or attempted by this work.
+Human judgment remains required for any *ambiguous* path or permission prompt
+(one whose correct answer isn't already defined by the test scenario),
+visual skin/layout appearance, unavailable credentials, and any failure that
+threatens a non-disposable profile. Phase 9 cannot be marked complete from
+unit tests alone — the harness launch/stop proof above is harness validation,
+not a Phase 9 result, and Phase 9 is not marked complete by this work.
+
+**Confirmation-dialog acceptance — proven automatable (2026-09-10)**: a
+dialog whose intended answer is already fixed by the test scenario (e.g.
+"Restore Arctic Fuse 3 configuration?" during a restore the scenario
+itself triggered) is not automatically a human-only judgment call just
+because it requires confirmation: restore, rollback, and pending-recovery
+behavior can be driven by the harness itself. This was previously
+under-investigated (a capability claim — "no proven mechanism yet" — not a
+policy requirement) and has now been proven live using only existing,
+official Kodi JSON-RPC primitives, no custom GUI-automation code:
+
+```sh
+./tools/kodi-test jsonrpc XBMC.GetInfoBooleans '{"booleans":["Control.HasFocus(9010)","Control.HasFocus(9011)"]}'
+./tools/kodi-test jsonrpc Input.Up '{}'      # move focus from the default (No) to Yes
+./tools/kodi-test jsonrpc Input.Select '{}'  # activate the focused button
+```
+
+`JSONRPC.Introspect` (unfiltered) lists the full `Input.*` namespace
+(`Back`, `ButtonEvent`, `ContextMenu`, `Down`, `ExecuteAction`, `Home`,
+`Info`, `Left`, `Right`, `Select`, `SendText`, `ShowCodec`, `ShowOSD`,
+`ShowPlayerProcessInfo`, `Up`) — these are Kodi's own remote-input API, the
+same commands a physical remote/keyboard would send. For AF3's skinned
+`DialogConfirm`, the three buttons are real controls `9010` (No,
+default-focused), `9011` (Yes), `9012` (extra) — found by reading the
+skin's own `Dialog_DialogConfirm.xml` (`onclick>SendClick(11)` etc. map to
+the underlying `10`/`11`/`12` ids the skin's grouplist wraps as
+`9010`/`9011`/`9012`) and confirmed live via
+`Control.HasFocus(<id>)`. Because the grouplist is vertical
+(`onleft` exits the list entirely to a different control), `Input.Up`/
+`Input.Down` move focus between buttons, not `Input.Left`/`Input.Right`.
+Proven twice in one live restore: accepting the initial yes/no dialog
+produced `pending-skin-restore.json` (`"phase":"prepared"`, matching
+`stage_skin_restore()`); accepting the follow-up OK dialog (`Input.Select`
+alone — a single-button dialog needs no navigation) advanced it to
+`"phase":"rebuild"` and invoked `finish_skin_restore()`. No new harness
+code was added or needed for this — the existing generic `jsonrpc` CLI
+subcommand was sufficient.
+
+**A separate, genuine blocker was found past both dialogs (2026-09-10)**:
+`finish_skin_restore()`'s `rebuild_skin()` step — which runs
+`RunScript(script.skinvariables,...)` and polls a Home-window completion
+property — did not complete within its own 60-second internal timeout.
+The pending state stayed at `"phase":"rebuild"` for 85+ seconds of
+observation, and a plain, unrelated `XBMC.GetInfoBooleans
+System.AddonIsEnabled(...)` check issued independently over JSON-RPC also
+timed out during the hang — evidence the whole GUI/info-manager thread was
+wedged, not just this one script's retry loop. `stop` (`SIGTERM`) still
+worked immediately even while wedged, and the real Kodi profile was
+confirmed untouched. This *is* the kind of "unexpected condition where
+safe recovery is uncertain" `AGENT_WORKFLOW.md` reserves for human
+judgment — not because of a confirmation dialog, but because diagnosing a
+GUI-thread wedge inside `script.skinvariables`' `RunScript`/
+`ActivateWindow` interaction needs dedicated, focused debugging that
+simple JSON-RPC polling from outside cannot resolve on its own.
 
 **Non-interactive script triggering — proven via JSON-RPC (2026-09-10)**:
 Phase 9a steps 5+ need a way to trigger a Backup Pro action (e.g.
