@@ -318,7 +318,7 @@ def sha256_reader(read_chunk, chunk_size=1024 * 1024, check_cancel=None):
         chunk = read_chunk(chunk_size)
         if not chunk:
             break
-        if not isinstance(chunk, bytes):
+        if isinstance(chunk, str):
             chunk = chunk.encode('utf-8')
         digest.update(chunk)
         size += len(chunk)
