@@ -5,6 +5,8 @@ publishing add-ons such as Backup Pro. It is operational documentation, not
 authorization to publish. Agents must never publish, commit in the distribution
 repository, or push unless the user explicitly requests that action.
 
+For local Kodi validation, see [`MAC_KODI_VALIDATION.md`](MAC_KODI_VALIDATION.md).
+
 ## Repository and delivery path
 
 - Local repository: `/Users/example/Documents/Kodi/repository.eengert`
