@@ -106,10 +106,12 @@ add-on's own declared default, exactly like a real, untouched install.
   disposable-launch test began, with no further writes afterward.
 - This confirms the isolation mechanism (HOME override + disposable root)
   actually works end-to-end on this Mac, not just in unit tests.
-- **Not yet proven**: installing Backup Pro into the disposable profile and
-  running it (`./tools/kodi-test install` has unit-test coverage but has not
-  yet been exercised against a live disposable Kodi launch), and none of the
-  Phase 9 Backup Pro backup/restore/recovery scenario steps below.
+- Since this was written, installing and running Backup Pro, capturing AF3
+  state, creating a real backup, and triggering a restore up to its
+  confirmation prompt have all been proven live — see "Phase 9 validation
+  procedure and current status" below for the current, accurate picture.
+  **Still not proven**: anything past Phase 9b's confirmation prompts
+  (steps 8-9 below).
 
 ## Phase 9 validation procedure and current status
 
@@ -123,14 +125,24 @@ The Phase 9 validation scenario:
 4. **Complete/proven.** Install/update the development add-on with the
    allowlisted local copy above.
 5. **Complete/proven.** Capture known AF3 settings/appearance/helper state.
-6. **Remaining.** Create a Backup Pro archive and inspect its manifest, sizes,
-   hashes and exclusions.
-7. **Remaining.** Change only the disposable profile, restore the archive,
-   accept any skin confirmation prompt, and verify live values, source
-   hashes, rebuilt data and persisted state.
-8. **Remaining.** Restart Kodi and repeat the verification.
-9. **Remaining.** Exercise pending-recovery/rollback and compare
-   installed/package files.
+6. **Complete/proven.** Create a Backup Pro archive and inspect its manifest,
+   sizes, hashes and exclusions.
+7. **Partially proven (2026-09-10).** Changing only the disposable profile
+   and triggering a restore up to the point of the skin confirmation prompt
+   are proven: a scripted `Settings.SetSettingValue` changed
+   `lookandfeel.skincolors` on the live disposable profile, a triggered
+   `mode=restore` reached exactly the expected blocking dialog (confirmed
+   objectively via `Window.IsActive(yesnodialog)` and
+   `Control.GetLabel(1)` == `"Restore Arctic Fuse 3 configuration"`,
+   matching `_restoreSkinConfig()`'s own dialog text), and no partial state
+   (`pending-skin-restore.json`, `skin-rollback/`) existed before the
+   instance was stopped without accepting it. **Accepting the prompt and
+   verifying live values/hashes/rebuilt data afterward remain Phase 9b
+   (human-only)** — not attempted.
+8. **Remaining — depends on Phase 9b accepting the prompt in step 7.**
+   Restart Kodi and repeat the verification.
+9. **Remaining — depends on Phase 9b.** Exercise pending-recovery/rollback
+   and compare installed/package files.
 10. **Cleanup/reset, as applicable.** Preserve machine-verifiable results,
     then reset or discard only the disposable profile.
 
