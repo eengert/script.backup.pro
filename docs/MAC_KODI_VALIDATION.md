@@ -204,22 +204,72 @@ closure — `script.module.dropbox` itself needs `six`, `requests`,
 own `addon.xml` mentions. Proven against a real launch: all ten
 dependency add-ons copied and recognized.
 
-**A real Backup Pro bug surfaced once dependencies were resolved, not
-yet fixed**: with the full dependency graph installed, a triggered
-`mode=backup` run got all the way to
+**A real Backup Pro bug surfaced once dependencies were resolved, fixed
+(commit `22c914c`)**: with the full dependency graph installed, a
+triggered `mode=backup` run got all the way to
 `XbmcBackup._createValidationFile()` — proving the trigger mechanism
 works end-to-end, past every import, not just that Kodi's API accepted
 the call — before failing with `Unable to create Backup Pro manifest:
 'bytearray' object has no attribute 'encode'`. Root cause identified by
-reading the code: `resources/lib/archive.py::sha256_reader()` assumes
-`read_chunk()` returns `bytes` or `str` and calls `.encode('utf-8')` on
-anything else, but this Kodi 21.1 build's `xbmcvfs.File.read()` returns
-`bytearray`, which has no `.encode()` method. This is production code,
-not the harness — not fixed here; it needs its own scoped, tested fix.
-Phase 9a step 5 (create and inspect an actual backup's manifest/
-hashes/exclusions) and later steps remain blocked on this specific,
-now-precisely-understood bug — not on the trigger mechanism, which is
-fully proven, and not on live-validation policy.
+reading the code: `resources/lib/archive.py::sha256_reader()` assumed
+`read_chunk()` returns `bytes` or `str` and called `.encode('utf-8')`
+on anything else, but this Kodi 21.1 build's `xbmcvfs.File.read()`
+returns `bytearray`, which has no `.encode()` method. Fixed with a
+regression test reproducing the exact case first (TDD). **Phase 9a
+step 5 is now done**: a triggered backup completes, and its manifest
+was inspected directly — correct `addon_version`/`kodi_version`,
+correct directory exclusions, 11 files each with a `sha256` hash and
+`size`.
+
+## Phase 9a step 4 (AF3 state capture) — genuinely blocked, not yet solved
+
+Backup Pro's AF3 capture is gated on `xbmc.getSkinDir() == AF3_ID`
+(`resources/lib/backup.py`), so AF3 must actually be the *active* skin
+in the disposable profile, not merely present. `install_skin()`
+(`./tools/kodi-test install-skin`) copies a skin add-on and its own
+transitive dependencies from the real profile, the same pattern
+`install_dependencies()` uses, and `configure_webserver(extra_settings=
+{"lookandfeel.skin": AF3_ID})` (`enable-webserver --skin <id>`) sets it
+active before the first launch.
+
+Live-tested (2026-09-10): `install-skin` initially failed refusing
+`xbmc.gui` — AF3's own `addon.xml` declares that virtual platform
+dependency directly (Backup Pro's `addon.xml` only declared
+`xbmc.python`), so `_declared_dependencies()`'s exclusion was
+generalized to the whole `xbmc.*` namespace rather than one literal id
+(fixed, tested, committed). Retried: `install-skin` then refused
+`script.module.pil`, required transitively by two of AF3's own declared
+dependencies (`plugin.video.themoviedb.helper` and
+`script.texturemaker`) — **and this one is not present in the real,
+normal Kodi profile at all**, confirmed by direct inspection
+(`ls ~/Library/Application Support/Kodi/addons/script.module.pil` does
+not exist). Every other add-on in AF3's full transitive closure (11
+add-ons) *is* present in the real profile.
+
+To confirm this is the actual blocker rather than an artifact of the
+harness's dependency walk, copied AF3 manually (bypassing
+`install_skin()`) and launched: Kodi logged `Failed to load skin
+'skin.arctic.fuse.3'` and silently fell back to the bundled Estuary
+skin — Kodi's own add-on manager refuses to activate a skin with an
+unmet declared dependency; it does not merely warn. Real Kodi profile
+confirmed untouched (unchanged file mtimes); stopped and reset the
+disposable profile cleanly afterward.
+
+**This is a genuine, precisely-understood blocker, not a harness bug**:
+the "copy an already-installed add-on from the real profile" approach
+that solved every other dependency gap in this project cannot work
+here, because the real profile itself has never installed
+`script.module.pil`. The only way to complete Phase 9a step 4 (and the
+steps that build on it) is a *live network install* of
+`script.module.pil` from Kodi's official add-on repository — a
+materially different capability from anything this harness has done so
+far (every prior install/copy operation was local-file-only, read-only
+from the real profile, with zero network dependency). This has **not**
+been attempted or authorized — it introduces new considerations (which
+repository to trust, version pinning, install reliability, whether a
+disposable profile should reach the network at all) that deserve an
+explicit decision rather than being assumed. Until that's decided, step
+4 (and steps 6-9, which build on AF3 being active) remain blocked.
 
 ## macOS and recovery assumptions
 
