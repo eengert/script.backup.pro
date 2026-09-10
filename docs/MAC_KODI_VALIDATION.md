@@ -107,16 +107,12 @@ add-on's own declared default, exactly like a real, untouched install.
 - This confirms the isolation mechanism (HOME override + disposable root)
   actually works end-to-end on this Mac, not just in unit tests.
 - Since this was written, installing and running Backup Pro, capturing AF3
-  state, creating a real backup, and accepting a restore's confirmation
-  prompts (deterministically, via Kodi's own JSON-RPC `Input.*`
-  primitives — no human input needed) have all been proven live — see
-  "Phase 9 validation procedure and current status" below for the
-  current, accurate picture. **Still not proven**: whether
-  `finish_skin_restore()`'s AF3 menu/widget rebuild step
-  (`rebuild_skin()`) actually completes in this harness — it hung for
-  85+ seconds past its own 60s internal timeout in the one live attempt
-  so far, a genuine unresolved issue unrelated to dialog automation (see
-  step 8 below).
+  state, creating a real backup, accepting a restore's confirmation prompts
+  deterministically (Kodi's own JSON-RPC `Input.*` primitives, no human
+  input needed), completing the AF3 rebuild, and restart persistence have
+  all been proven live — see "Phase 9 validation procedure and current
+  status" below. Phase 9a (all 11 steps) is now complete; only Phase 9b's
+  visual/appearance confirmation remains.
 
 ## Phase 9 validation procedure and current status
 
@@ -146,29 +142,29 @@ The Phase 9 validation scenario:
    with `"phase":"prepared"`; the follow-up `"AF3 files are staged
    safely..."` OK dialog was accepted the same way, advancing to
    `"phase":"rebuild"` and invoking `finish_skin_restore()`.
-8. **Attempted, blocked on a real (non-dialog) issue (2026-09-10).**
-   `finish_skin_restore()`'s `rebuild_skin()` call — which drives
-   `script.skinvariables` via `RunScript(...)` and polls for a
-   completion property — did not finish within its own 60s timeout;
-   the pending state stayed at `"phase":"rebuild"` for 85+ seconds, and
-   an unrelated `XBMC.GetInfoBooleans` check issued independently over
-   JSON-RPC also timed out during the hang, indicating the GUI/
-   info-manager thread was genuinely wedged, not just this one script's
-   retry loop. `stop` still worked immediately. This needs dedicated
-   debugging (not a confirmation choice) and is the actual current
-   blocker — restarting Kodi and repeating verification depends on this
-   being root-caused first.
-9. **Reachable, blocked on the same issue as step 8 (2026-09-10).**
-   Relaunching with the stuck `"phase":"rebuild"` state still present and
-   triggering the add-on with no `mode` correctly surfaced
-   `resolvePendingSkinRestore()`'s own recovery-choice dialog
-   (`Window.IsActive(selectdialog)`, `"A pending Arctic Fuse 3 restore
-   needs your attention"`) — proving that prompt is reachable
-   non-interactively too. Not exercised further: `rollback_skin_restore()`
-   calls the same `rebuild_skin()` that hung in step 8, so either choice
-   was expected to reproduce it.
+8. **Complete/proven — root-caused and fixed (2026-09-10).**
+   `finish_skin_restore()`'s `rebuild_skin()` call hung past its own 60s
+   timeout, wedging the GUI/info-manager thread (an unrelated JSON-RPC
+   info check also timed out during the hang). Root cause: Backup Pro
+   keeps a modal `xbmcgui.DialogProgress` open for the whole restore, and
+   `rebuild_skin()` needs `ActivateWindow` (via `script.skinvariables`'s
+   `RunScript`) to succeed, which Kodi refuses while a modal dialog is
+   showing. **Fix (commit `31450ab`)**: close the progress dialog right
+   before calling `finish_skin_restore()`/`rollback_skin_restore()`; 2
+   regression tests added, 275 tests pass. Live-reproven after the fix: a
+   full backup→config-change→restore cycle completed with no wedge,
+   `lookandfeel.skincolors` reverted to the backed-up value, and that
+   value persisted across a full `tools/kodi-test restart`.
+9. **Complete/proven (2026-09-10).** The pending-recovery dialog
+   (`resolvePendingSkinRestore()`) is reachable non-interactively
+   (invoke the add-on with no `mode`) and was accepted the same way
+   (`Input.Up` + `Input.Select`) to discard a stale pending restore,
+   confirmed via the pending-state file disappearing and the GUI staying
+   responsive. `rollback_skin_restore()`'s specific choice wasn't
+   separately live-exercised (shares the same now-fixed `rebuild_skin()`
+   call already proven via the `finish` path).
 10. **Cleanup/reset, as applicable.** Preserve machine-verifiable results,
-    then reset or discard only the disposable profile.
+    then reset or discard only the disposable profile. Done.
 
 The planned checks can use Kodi's own UI, Kodi built-ins/JSON-RPC (now
 established and tested — see "Evidence and automation boundary" below),
@@ -228,22 +224,27 @@ alone — a single-button dialog needs no navigation) advanced it to
 code was added or needed for this — the existing generic `jsonrpc` CLI
 subcommand was sufficient.
 
-**A separate, genuine blocker was found past both dialogs (2026-09-10)**:
-`finish_skin_restore()`'s `rebuild_skin()` step — which runs
-`RunScript(script.skinvariables,...)` and polls a Home-window completion
-property — did not complete within its own 60-second internal timeout.
-The pending state stayed at `"phase":"rebuild"` for 85+ seconds of
-observation, and a plain, unrelated `XBMC.GetInfoBooleans
-System.AddonIsEnabled(...)` check issued independently over JSON-RPC also
-timed out during the hang — evidence the whole GUI/info-manager thread was
-wedged, not just this one script's retry loop. `stop` (`SIGTERM`) still
-worked immediately even while wedged, and the real Kodi profile was
-confirmed untouched. This *is* the kind of "unexpected condition where
-safe recovery is uncertain" `AGENT_WORKFLOW.md` reserves for human
-judgment — not because of a confirmation dialog, but because diagnosing a
-GUI-thread wedge inside `script.skinvariables`' `RunScript`/
-`ActivateWindow` interaction needs dedicated, focused debugging that
-simple JSON-RPC polling from outside cannot resolve on its own.
+**A separate blocker was found past both dialogs, then root-caused and
+fixed (2026-09-10)**: `finish_skin_restore()`'s `rebuild_skin()` step —
+which runs `RunScript(script.skinvariables,...)` and polls a Home-window
+completion property — hung past its own 60-second internal timeout, and a
+plain, unrelated `XBMC.GetInfoBooleans System.AddonIsEnabled(...)` check
+issued independently over JSON-RPC also timed out during the hang —
+evidence the whole GUI/info-manager thread was wedged. Root cause: Backup
+Pro keeps a modal `xbmcgui.DialogProgress` open for the whole restore
+(`self.progressBar`, default `progress_mode`), and Kodi refuses
+`ActivateWindow` while a modal dialog is showing — so `rebuild_skin()`'s
+window activation, and therefore its completion property, never
+succeeded. **Fix (commit `31450ab`)**: close the progress dialog
+immediately before calling `finish_skin_restore()`/`rollback_skin_restore()`
+in both call sites (`_restoreSkinConfig()`, `resolvePendingSkinRestore()`);
+progress callbacks during rebuild are already exception-safe
+(`skin_coordinator._progress()` swallows exceptions). 2 regression tests
+assert the dialog closes before the host's rebuild-only `activate_skin()`
+call; 275 tests pass. Live-reproven: a full backup→config-change→restore
+cycle completed with the GUI staying responsive throughout (no wedge),
+`lookandfeel.skincolors` reverted correctly, and that value persisted
+across a full Kodi restart.
 
 **Non-interactive script triggering — proven via JSON-RPC (2026-09-10)**:
 Phase 9a steps 5+ need a way to trigger a Backup Pro action (e.g.
