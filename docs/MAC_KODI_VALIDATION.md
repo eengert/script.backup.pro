@@ -268,10 +268,24 @@ Kodi's JSON-RPC is proven instead, against a real launch on this Mac:
 ./tools/kodi-test configure script.backup.pro remote_path=<local-dest> remote_selection=0
 ./tools/kodi-test launch
 ./tools/kodi-test jsonrpc JSONRPC.Ping                       # -> "pong"
-./tools/kodi-test enable-addon script.backup.pro              # a fresh install() is not enabled by default
+./tools/kodi-test enable-closure script.backup.pro           # enables the whole dependency closure in one call - see below
 ./tools/kodi-test execute-addon script.backup.pro mode=backup
 ./tools/kodi-test stop
 ```
+
+**`enable-closure` (added 2026-09-10)**: a fresh `install()`/`install-dependencies()`/
+`install-skin()` copy is not enabled by default, and neither is any of
+its dependencies — a human validation session hit `ModuleNotFoundError`
+(`dateutil`, `dropbox`) launching Backup Pro normally from Kodi's
+Program Add-ons UI because the dependency add-ons were disabled, even
+though their files were present. `./tools/kodi-test enable-closure
+script.backup.pro [skin.arctic.fuse.3 ...]` computes the full
+transitive dependency closure of each given seed id from the
+already-installed disposable-profile files and enables all of it in one
+deterministic call — no need to separately enumerate the 10 (or 17, for
+AF3) dependency ids by hand. Follow with `restart` when a skin is
+involved (a live enable does not retroactively fix an already-failed
+boot-time skin load).
 
 `enable-webserver` fails closed: it only writes `guisettings.xml` into a
 *fresh* disposable profile (before the first launch), refusing if one
@@ -369,8 +383,10 @@ not one lucky attempt:
 
 **Fully proven end to end** (`./tools/kodi-test init` → `install-skin`
 → `install .` → `install-dependencies` → `enable-webserver --skin
-skin.arctic.fuse.3` → `launch` → `enable-addon script.backup.pro` +
-`enable-addons <all 17 AF3-closure ids>` → `restart`): the log showed
+skin.arctic.fuse.3` → `launch` → `enable-closure script.backup.pro
+skin.arctic.fuse.3` — see below, one call now replaces the old
+`enable-addon` + `enable-addons <all 17 AF3-closure ids>` pair →
+`restart`): the log showed
 `load skin from: .../addons/skin.arctic.fuse.3/ (version: 3.2.19)`
 with no failure, and `Settings.GetSettingValue lookandfeel.skin`
 confirmed `skin.arctic.fuse.3` active. With `backup_skin_config=true`

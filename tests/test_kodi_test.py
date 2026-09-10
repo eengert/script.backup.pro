@@ -562,6 +562,107 @@ class KodiHarnessTests(unittest.TestCase):
         finally:
             MODULE.enable_addon = original
 
+    def test_installed_addon_closure_walks_disposable_and_system_addons(self):
+        # regression guard: a human validation session hit
+        # ModuleNotFoundError (dateutil, dropbox) launching Backup Pro
+        # normally, because install_dependencies() only copies files -
+        # every freshly copied add-on still needs a separate enable
+        # step, and enumerating each dependency id by hand is exactly
+        # what this closure computation exists to replace.
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.KODI_SYSTEM_ADDONS_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+
+                system_dir = d / "fake-system-addons" / "script.module.bundled"
+                system_dir.mkdir(parents=True)
+                (system_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
+                MODULE.KODI_SYSTEM_ADDONS_DIR = d / "fake-system-addons"
+
+                seed_dir = MODULE.KODI_ADDONS_DIR / "script.backup.pro"
+                seed_dir.mkdir(parents=True)
+                (seed_dir / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.dateutil" version="1.0.0"/>'
+                    '<import addon="script.module.bundled" version="1.0.0"/>'
+                    '</requires></addon>')
+                dep_dir = MODULE.KODI_ADDONS_DIR / "script.module.dateutil"
+                dep_dir.mkdir(parents=True)
+                (dep_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
+
+                closure = MODULE._installed_addon_closure(["script.backup.pro"])
+                self.assertEqual(
+                    closure, ["script.backup.pro", "script.module.dateutil"])
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.KODI_SYSTEM_ADDONS_DIR) = old
+
+    def test_installed_addon_closure_refuses_uninstalled_dependency(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                seed_dir = MODULE.KODI_ADDONS_DIR / "script.backup.pro"
+                seed_dir.mkdir(parents=True)
+                (seed_dir / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.missing" version="1.0.0"/>'
+                    '</requires></addon>')
+                with self.assertRaises(RuntimeError):
+                    MODULE._installed_addon_closure(["script.backup.pro"])
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE) = old
+
+    def test_enable_closure_enables_the_full_computed_closure(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE)
+        calls = []
+
+        def fake_enable_addon(addon_id, **kwargs):
+            calls.append((addon_id, kwargs))
+            return {"result": "OK"}
+
+        original_enable = MODULE.enable_addon
+        MODULE.enable_addon = fake_enable_addon
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                seed_dir = MODULE.KODI_ADDONS_DIR / "script.backup.pro"
+                seed_dir.mkdir(parents=True)
+                (seed_dir / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.dateutil" version="1.0.0"/>'
+                    '</requires></addon>')
+                dep_dir = MODULE.KODI_ADDONS_DIR / "script.module.dateutil"
+                dep_dir.mkdir(parents=True)
+                (dep_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
+
+                enabled = MODULE.enable_closure(
+                    ["script.backup.pro"], port=1234)
+                self.assertEqual(
+                    enabled, ["script.backup.pro", "script.module.dateutil"])
+                self.assertEqual(calls, [
+                    ("script.backup.pro", {"port": 1234}),
+                    ("script.module.dateutil", {"port": 1234}),
+                ])
+        finally:
+            MODULE.enable_addon = original_enable
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE) = old
+
     def test_install_authorized_network_package_refuses_unauthorized_package(self):
         with self.assertRaises(RuntimeError):
             MODULE.install_authorized_network_package("script.module.something-else")

@@ -454,6 +454,60 @@ def enable_addons(addon_ids: list[str], **jsonrpc_kwargs) -> None:
         enable_addon(addon_id, **jsonrpc_kwargs)
 
 
+def _installed_addon_closure(seed_ids: list[str]) -> list[str]:
+    """The transitive closure of seed_ids' declared dependencies as
+    already present in the disposable profile (or Kodi's own system
+    bundle), including the seeds themselves - read-only, no copying, no
+    real-profile access. System-bundled add-ons (e.g.
+    script.module.pil) are excluded: Kodi ships them enabled, so they
+    never needed the enable_addons() step below. This mirrors
+    _copy_addon_closure()'s traversal but is safe to call any time
+    after install()/install_dependencies()/install_skin() have already
+    copied the files - it does not require the real profile to still be
+    reachable. Order preserved: seeds first, then each newly discovered
+    dependency."""
+    closure: list[str] = []
+    seen: set[str] = set()
+    pending = list(seed_ids)
+    while pending:
+        addon_id = pending.pop(0)
+        if addon_id in seen:
+            continue
+        seen.add(addon_id)
+        system_source = KODI_SYSTEM_ADDONS_DIR / addon_id
+        if system_source.is_dir():
+            pending.extend(_declared_dependencies(system_source))
+            continue
+        disposable_source = KODI_ADDONS_DIR / addon_id
+        if not disposable_source.is_dir():
+            raise RuntimeError(
+                "add-on is not installed in the disposable profile or "
+                f"Kodi's system bundle: {addon_id} - run install()/"
+                "install_dependencies()/install_skin() first")
+        closure.append(addon_id)
+        pending.extend(_declared_dependencies(disposable_source))
+    return closure
+
+
+def enable_closure(seed_ids: list[str], **jsonrpc_kwargs) -> list[str]:
+    """enable_addons() for the full transitive dependency closure of
+    seed_ids (each seed plus everything it declares as a dependency,
+    already installed in the disposable profile) in one deterministic
+    call - no need to separately enumerate/paste each dependency id.
+    Added 2026-09-10 after a human validation session hit
+    ModuleNotFoundError (dateutil, dropbox) launching Backup Pro
+    normally from Kodi's UI: install_dependencies()/install_skin() only
+    copy files, and every freshly copied add-on defaults to disabled -
+    the prior documented sequence required enabling each of the 10 (or
+    17, for the skin) dependency ids by hand, which is exactly the kind
+    of manual enumeration this replaces. Use
+    enable_closure(["script.backup.pro"]) and/or
+    enable_closure(["skin.arctic.fuse.3"]) instead."""
+    ids = _installed_addon_closure(seed_ids)
+    enable_addons(ids, **jsonrpc_kwargs)
+    return ids
+
+
 def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dict:
     """Invoke Addons.ExecuteAddon for addon_id via JSON-RPC - the
     documented way to trigger a Program add-on non-interactively,
@@ -590,6 +644,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("addon_id", nargs="?", default=ADDON_ID)
     p = sub.add_parser("enable-addons")
     p.add_argument("addon_ids", nargs="+")
+    p = sub.add_parser("enable-closure")
+    p.add_argument("addon_ids", nargs="+",
+                    help="seed addon id(s), e.g. script.backup.pro and/or "
+                         "skin.arctic.fuse.3 - their full dependency "
+                         "closure is computed and enabled in one call")
     p = sub.add_parser("execute-addon")
     p.add_argument("addon_id", nargs="?", default=ADDON_ID)
     p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
@@ -624,6 +683,8 @@ def main(argv: list[str]) -> int:
         elif args.command == "enable-addons":
             enable_addons(args.addon_ids)
             result = {"enabled": args.addon_ids}
+        elif args.command == "enable-closure":
+            result = {"enabled": enable_closure(args.addon_ids)}
         elif args.command == "install-network-package":
             result = install_authorized_network_package(args.addon_id)
         else:
