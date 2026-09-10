@@ -1,0 +1,163 @@
+# Autonomous Kodi-on-Mac Validation
+
+This is the boundary for safe local validation of Backup Pro. It records what
+is established by the repository and what is not recoverable as a previously
+proven command. It must not be read as authorization to run Phase 9.
+
+## Confirmed environment
+
+- Kodi application: `/Applications/Kodi.app` (Kodi 21.1; executable
+  `/Applications/Kodi.app/Contents/MacOS/Kodi`)
+- Approved platform: this Mac only, using a disposable Kodi profile.
+- Backup Pro source checkout: any local clone of this repository.
+- Project tests are ordinary Python unit tests under `tests/`; run them from
+  the active Backup Pro checkout with `python3 -m unittest discover -s tests -v`.
+
+## Established harness
+
+From the Backup Pro checkout:
+
+```sh
+./tools/kodi-test verify
+./tools/kodi-test init
+./tools/kodi-test launch
+./tools/kodi-test status
+./tools/kodi-test stop
+```
+
+Kodi 21.1's command-line help exposes `--portable`, but that resolves an
+application-install-relative directory, not an arbitrary profile path; there
+is no flag to point Kodi at an arbitrary profile directory. The harness
+instead launches Kodi with `HOME` overridden to a project-local, disposable
+directory (`<checkout>/.kodi-test/home`) and relies on Kodi's own path
+resolution from `HOME`.
+
+**Actual path layout, confirmed against a real isolated launch on this Mac
+(2026-09-10, both from the Codex worktree and independently reproduced from
+the Claude worktree)** — Kodi 21.1 on macOS does **not** use a `.kodi/`
+layout for its profile or logs; it resolves macOS-style paths beneath
+`HOME`:
+
+| Kodi special path       | Resolves to (relative to disposable `HOME`)     |
+|--------------------------|--------------------------------------------------|
+| `special://home/`        | `Library/Application Support/Kodi` (the appdata root, containing `addons/`, `userdata/`, `system/`, `media/`) |
+| `special://masterprofile/` / `special://profile/` | `Library/Application Support/Kodi/userdata` |
+| `special://logpath/`     | `Library/Logs` (the actual log file is `Library/Logs/kodi.log`) |
+| `special://temp/`        | `.kodi/temp` (scratch/cache only — not the profile and not the log) |
+
+`tools/kodi_test.py` was corrected to this observed layout: `verify`/`status`
+report `appdata`, `userdata`, `addons`, and `log` paths matching the table
+above, and `install` places the add-on under
+`<appdata>/addons/script.backup.pro/` (an earlier draft of this harness
+assumed a `.kodi/`-based layout for all four of those paths, including the
+add-on install target; that assumption was disproved by the real launch's
+log and corrected before this harness was checkpointed).
+
+`verify` refuses a missing/non-executable Kodi binary, refuses if any
+disposable path would fall outside the disposable root, and separately
+refuses if the disposable appdata directory or log file would overlap the
+*real* normal Kodi profile (`~/Library/Application Support/Kodi`) or its log
+(`~/Library/Logs/kodi.log`) — both checks are exercised by
+`tests/test_kodi_test.py`. `init`/`reset` refuse a running instance and
+delete only that exact project-local `.kodi-test/` root after resolving and
+validating the path; they never touch anything outside it.
+
+Install the development add-on without publishing or packaging the worktree:
+
+```sh
+./tools/kodi-test install <path-to-worktree>
+```
+
+The allowlist copies only `addon.xml`, `default.py`, `service.py`, artwork and
+`resources/` into `addons/script.backup.pro/`; it rejects symlinks and excludes
+tests, bytecode, docs, Git and agent files. Source paths outside the project
+are refused.
+
+## What has actually been proven so far
+
+- `./tools/kodi-test verify` succeeds on this Mac from both the Codex and
+  Claude worktrees (each worktree gets its own independent `.kodi-test/`
+  disposable root, since `PROJECT` is resolved from the script's own
+  location).
+- A real, unmodified `/Applications/Kodi.app/Contents/MacOS/Kodi` launched
+  under `./tools/kodi-test launch` with `HOME` overridden this way: starts,
+  logs its actual resolved `special://home/`, `special://logpath/`, and
+  `special://profile/` paths (all confirmed under the disposable `HOME`,
+  never under the real `~/Library/...`), initializes its GUI/renderer, and
+  was stopped cleanly with `./tools/kodi-test stop` (`SIGTERM`, `running:
+  false` afterward).
+- The real, normal Kodi profile (`~/Library/Application Support/Kodi`) and
+  its log (`~/Library/Logs/kodi.log`) were confirmed untouched by this
+  activity: the real profile's `guisettings.xml` and log both show the
+  user's own independent, unrelated Kodi session stopping *before* the
+  disposable-launch test began, with no further writes afterward.
+- This confirms the isolation mechanism (HOME override + disposable root)
+  actually works end-to-end on this Mac, not just in unit tests.
+- **Not yet proven**: installing Backup Pro into the disposable profile and
+  running it (`./tools/kodi-test install` has unit-test coverage but has not
+  yet been exercised against a live disposable Kodi launch), and none of the
+  Phase 9 Backup Pro backup/restore/recovery scenario steps below.
+
+## Safe validation procedure (planned, not yet completed)
+
+The Phase 9 validation scenario:
+
+1. Run compile/package checks and the Python test suite.
+2. Create a disposable profile and verify its identity/path before Kodi starts.
+3. Launch Kodi against only that profile using the documented, human-verified
+   command. Do not use the normal profile.
+4. Install/update the development add-on with the allowlisted local copy above.
+5. Capture known AF3 settings/appearance/helper state.
+6. Create a Backup Pro archive and inspect its manifest, sizes, hashes and
+   exclusions.
+7. Change only the disposable profile, restore the archive, accept any skin
+   confirmation prompt, and verify live values, source hashes, rebuilt data and
+   persisted state.
+8. Restart Kodi and repeat the verification.
+9. Exercise pending-recovery/rollback and compare installed/package files.
+10. Preserve machine-verifiable results, then reset or discard only the
+    disposable profile.
+
+The planned checks can use Kodi's own UI and, if later established and tested,
+Kodi built-ins/JSON-RPC, filesystem inspection, archive inspection, process
+status, and Kodi/add-on logs. `resources/lib/skin_kodi_host.py` and the related
+coordinator and recovery modules are add-on runtime code, not host-side launch
+tooling.
+
+## Evidence and automation boundary
+
+Agents can safely automate once the profile and launch contract are recorded:
+Python/unit/package checks; ZIP and manifest inspection; profile-local file
+hashes; archive creation; controlled profile-local setup; process/log/status
+inspection; restart commands; and objective before/after state comparisons.
+
+Human judgment remains required for any ambiguous path or permission prompt,
+visual skin/layout appearance, whether a skin confirmation prompt is correct,
+unavailable credentials, and any failure that threatens a non-disposable
+profile. Phase 9 cannot be marked complete from unit tests alone — the harness
+launch/stop proof above is harness validation, not a Phase 9 result, and Phase
+9 is not marked complete or attempted by this work.
+
+## macOS and recovery assumptions
+
+The operator must have permission to launch Kodi and read/write the chosen
+disposable profile. Kodi may need to be fully stopped before profile reset or
+replacement. On interruption, stop Kodi, collect logs and state first, and
+reset only the verified disposable profile. Never use broad `rm`, `git clean`,
+or profile-wide cleanup against an unknown path.
+
+## Hard safety boundaries
+
+- Never launch tests against the normal Kodi profile.
+- Never install, configure, back up, restore, or otherwise write to an Apple TV.
+- Never modify unrelated Kodi data or infer that a path is disposable.
+- Never use destructive cleanup outside the verified disposable profile.
+- Never claim live validation succeeded without objective evidence and the
+  required human visual checks.
+- Do not publish while validating. Distribution steps are documented in
+  `docs/KODI_DISTRIBUTION_WORKFLOW.md` and require separate authorization.
+
+The helper's `status` output is the machine-readable record of the active PID,
+HOME, appdata, userdata, addons and log paths. It starts Kodi in a new session
+and stops it with `SIGTERM`; if it does not stop, the helper fails closed for
+further reset.
