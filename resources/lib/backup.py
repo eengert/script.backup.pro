@@ -29,6 +29,7 @@ from resources.lib.planning import (
     summarize_file_groups,
     tmdb_helper_cache_exclusions,
 )
+from resources.lib.status import describe_status
 from resources.lib.skin_adapter import (
     AF3_ID,
     APPEARANCE_SETTINGS,
@@ -782,6 +783,47 @@ class XbmcBackup:
             'Background/scheduled execution will not open a recovery '
             'dialog or switch skins.', xbmc.LOGWARNING)
         return True
+
+    def buildStatusReport(self):
+        """Gather a read-only status snapshot from local, already-known
+        state only - no network access and no mutation. Never lists the
+        remote destination's contents; that would risk a slow or blocking
+        call to open a status screen. Returns describe_status()'s
+        (label_key, detail) pairs for a caller to localize and display.
+        """
+        last_backup = {'known': False}
+
+        remote_configured = self.remoteConfigured()
+        remote = {'configured': remote_configured}
+        if remote_configured:
+            if utils.getSetting('remote_selection') == '2':
+                remote['label'] = utils.getString(30027)
+            else:
+                remote['label'] = self.remote_base_path
+
+        recovery_pending = self.inspectSkinRecovery()['kind'] != 'none'
+
+        scheduler = {'enabled': utils.getSettingBool('enable_scheduler')}
+        if scheduler['enabled']:
+            next_run_path = xbmcvfs.translatePath(
+                utils.data_dir()) + 'next_run.txt'
+            if xbmcvfs.exists(next_run_path):
+                with xbmcvfs.File(next_run_path) as fh:
+                    try:
+                        next_run = float(fh.read())
+                    except ValueError:
+                        next_run = 0
+                if next_run > 0:
+                    scheduler['next_run_label'] = utils.getRegionalTimestamp(
+                        datetime.fromtimestamp(next_run),
+                        ['dateshort', 'time'])
+
+        return describe_status({
+            'last_backup': last_backup,
+            'remote': remote,
+            'recovery_pending': recovery_pending,
+            'scheduler': scheduler,
+        })
 
     def _setupVFS(self, mode=-1, progressOverride=False):
         # set windows setting to true

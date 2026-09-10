@@ -693,3 +693,79 @@ msgstr ""
 msgctxt "#30172"
 msgid "Arctic Fuse 3 configuration included for recovery"
 msgstr ""
+
+msgctxt "#30173"
+msgid "Help"
+msgstr ""
+
+msgctxt "#30174"
+msgid "Status"
+msgstr ""
+
+msgctxt "#30175"
+msgid "Last backup completed:"
+msgstr ""
+
+msgctxt "#30176"
+msgid "No backup history is available yet"
+msgstr ""
+
+msgctxt "#30177"
+msgid "Backup destination:"
+msgstr ""
+
+msgctxt "#30178"
+msgid "No backup destination is configured"
+msgstr ""
+
+msgctxt "#30179"
+msgid "A configuration recovery is pending - open Backup Pro to continue or roll it back"
+msgstr ""
+
+msgctxt "#30180"
+msgid "No recovery is pending"
+msgstr ""
+
+msgctxt "#30181"
+msgid "Scheduled backups are on - next run:"
+msgstr ""
+
+msgctxt "#30182"
+msgid "Scheduled backups are on, but the next run time is not yet known"
+msgstr ""
+
+msgctxt "#30183"
+msgid "Scheduled backups are off"
+msgstr ""
+
+msgctxt "#30184"
+msgid "Backup Pro creates verified, versioned backups of your Kodi setup and is designed to coexist with the standard Backup add-on"
+msgstr ""
+
+msgctxt "#30185"
+msgid "Each backup is measured beforehand so you can see whether the destination has enough space, when that can be determined"
+msgstr ""
+
+msgctxt "#30186"
+msgid "Selected rebuildable caches, such as narrowly defined TMDb Helper caches, are left out instead of being copied blindly"
+msgstr ""
+
+msgctxt "#30187"
+msgid "Arctic Fuse 3 configuration, including Script Skin Variables data, is backed up and restored through its own dedicated recovery process"
+msgstr ""
+
+msgctxt "#30188"
+msgid "Restores are verified before anything changes, and recovery information is kept until the restore is confirmed safe"
+msgstr ""
+
+msgctxt "#30189"
+msgid "Scheduled backups can be turned on from Settings"
+msgstr ""
+
+msgctxt "#30190"
+msgid "Status shows the last backup, destination, pending recovery, and scheduler state"
+msgstr ""
+
+msgctxt "#30191"
+msgid "If a restore is interrupted, let Backup Pro's recovery continue or roll it back - do not edit skin files by hand"
+msgstr ""

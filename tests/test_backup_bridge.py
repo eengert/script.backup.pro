@@ -817,5 +817,117 @@ class BackupBridgeTests(unittest.TestCase):
                 backup_module.xbmcgui.Dialog = original_dialog
 
 
+class StatusReportTests(unittest.TestCase):
+    """Exercises XbmcBackup.buildStatusReport()'s Kodi-side wiring: it
+    must stay read-only, local-only (no remote listing, no network probe)
+    and delegate the actual formatting to status.describe_status()."""
+
+    def _instance(self, remote_configured=False, recovery_kind='none',
+                  remote_selection='0', remote_base_path=''):
+        instance = object.__new__(XbmcBackup)
+        instance.remoteConfigured = lambda: remote_configured
+        instance.inspectSkinRecovery = lambda: {'kind': recovery_kind}
+        instance.remote_base_path = remote_base_path
+        self._remote_selection = remote_selection
+        return instance
+
+    def setUp(self):
+        self._original_get_setting = backup_module.utils.getSetting
+        self._original_get_setting_bool = backup_module.utils.getSettingBool
+        self._remote_selection = '0'
+        backup_module.utils.getSetting = lambda name: (
+            self._remote_selection if name == 'remote_selection' else '')
+        backup_module.utils.getSettingBool = lambda _name: False
+
+    def tearDown(self):
+        backup_module.utils.getSetting = self._original_get_setting
+        backup_module.utils.getSettingBool = self._original_get_setting_bool
+
+    def test_no_destination_no_recovery_no_scheduler(self):
+        instance = self._instance()
+        report = instance.buildStatusReport()
+        self.assertEqual(
+            [key for key, _detail in report],
+            ['last_backup_unknown', 'remote_not_configured',
+             'recovery_clear', 'scheduler_disabled'])
+
+    def test_dropbox_destination_uses_its_localized_name(self):
+        instance = self._instance(
+            remote_configured=True, remote_selection='2')
+        report = instance.buildStatusReport()
+        self.assertIn(('remote_configured', '30027'), report)
+
+    def test_path_destination_shows_the_configured_path(self):
+        instance = self._instance(
+            remote_configured=True, remote_selection='0',
+            remote_base_path='/mnt/backups/')
+        report = instance.buildStatusReport()
+        self.assertIn(('remote_configured', '/mnt/backups/'), report)
+
+    def test_pending_recovery_is_surfaced_and_leads(self):
+        instance = self._instance(recovery_kind='discard')
+        report = instance.buildStatusReport()
+        self.assertEqual(report[0], ('recovery_pending', None))
+
+    def test_scheduler_disabled_never_touches_next_run_file(self):
+        original_exists = getattr(backup_module.xbmcvfs, 'exists', None)
+
+        def refuse_exists(_path):
+            raise AssertionError(
+                'scheduler is disabled; next_run.txt must not be read')
+
+        backup_module.xbmcvfs.exists = refuse_exists
+        try:
+            instance = self._instance()
+            report = instance.buildStatusReport()
+            self.assertIn(('scheduler_disabled', None), report)
+        finally:
+            if original_exists is None:
+                delattr(backup_module.xbmcvfs, 'exists')
+            else:
+                backup_module.xbmcvfs.exists = original_exists
+
+    def test_scheduler_enabled_reads_next_run_from_local_file(self):
+        class TextFile:
+            def __init__(self, path, mode='r'):
+                self.handle = open(path, mode, encoding='utf-8')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.handle.close()
+
+            def read(self):
+                return self.handle.read()
+
+        original_data_dir = backup_module.utils.data_dir
+        original_file = getattr(backup_module.xbmcvfs, 'File', None)
+        original_exists = getattr(backup_module.xbmcvfs, 'exists', None)
+        backup_module.utils.getSettingBool = lambda name: (
+            name == 'enable_scheduler')
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                backup_module.utils.data_dir = lambda: directory + '/'
+                backup_module.xbmcvfs.File = TextFile
+                backup_module.xbmcvfs.exists = os.path.exists
+                with open(os.path.join(directory, 'next_run.txt'), 'w',
+                          encoding='utf-8') as handle:
+                    handle.write('4102444800')  # 2100-01-01, well into the future
+
+                instance = self._instance()
+                report = instance.buildStatusReport()
+                keys = [key for key, _detail in report]
+                self.assertIn('scheduler_enabled_next', keys)
+        finally:
+            backup_module.utils.data_dir = original_data_dir
+            for name, value in (
+                    ('File', original_file), ('exists', original_exists)):
+                if value is None:
+                    delattr(backup_module.xbmcvfs, name)
+                else:
+                    setattr(backup_module.xbmcvfs, name, value)
+
+
 if __name__ == '__main__':
     unittest.main()
