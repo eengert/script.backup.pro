@@ -250,6 +250,31 @@ class KodiHarnessTests(unittest.TestCase):
         finally:
             MODULE.jsonrpc = original
 
+    def test_enable_addon_builds_addons_setaddonenabled_call(self):
+        # regression guard: a freshly install()-ed add-on is not enabled
+        # by default, and Addons.ExecuteAddon fails against a disabled
+        # add-on - confirmed empirically against a real launch
+        # (2026-09-10, see docs/MAC_KODI_VALIDATION.md).
+        captured = {}
+
+        def fake_jsonrpc(method, params=None, **kwargs):
+            captured["method"] = method
+            captured["params"] = params
+            captured["kwargs"] = kwargs
+            return {"result": "OK"}
+
+        original = MODULE.jsonrpc
+        MODULE.jsonrpc = fake_jsonrpc
+        try:
+            result = MODULE.enable_addon("script.backup.pro", port=1234)
+            self.assertEqual(result["result"], "OK")
+            self.assertEqual(captured["method"], "Addons.SetAddonEnabled")
+            self.assertEqual(captured["params"],
+                              {"addonid": "script.backup.pro", "enabled": True})
+            self.assertEqual(captured["kwargs"], {"port": 1234})
+        finally:
+            MODULE.jsonrpc = original
+
     def test_install_allowlist_excludes_development_files(self):
         with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
             source = Path(d) / "addon"

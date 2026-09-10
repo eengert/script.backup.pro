@@ -129,11 +129,12 @@ The Phase 9 validation scenario:
 10. Preserve machine-verifiable results, then reset or discard only the
     disposable profile.
 
-The planned checks can use Kodi's own UI and, if later established and tested,
-Kodi built-ins/JSON-RPC, filesystem inspection, archive inspection, process
-status, and Kodi/add-on logs. `resources/lib/skin_kodi_host.py` and the related
-coordinator and recovery modules are add-on runtime code, not host-side launch
-tooling.
+The planned checks can use Kodi's own UI, Kodi built-ins/JSON-RPC (now
+established and tested — see "Evidence and automation boundary" below),
+filesystem inspection, archive inspection, process status, and
+Kodi/add-on logs. `resources/lib/skin_kodi_host.py` and the related
+coordinator and recovery modules are add-on runtime code, not host-side
+launch tooling.
 
 ## Evidence and automation boundary
 
@@ -149,23 +150,55 @@ profile. Phase 9 cannot be marked complete from unit tests alone — the harness
 launch/stop proof above is harness validation, not a Phase 9 result, and Phase
 9 is not marked complete or attempted by this work.
 
-**Non-interactive script triggering — a real gap, not yet solved
-(2026-09-10)**: Phase 9a steps 5+ need a way to trigger a Backup Pro
-action (e.g. "create a backup") without a human clicking the main menu.
+**Non-interactive script triggering — proven via JSON-RPC (2026-09-10)**:
+Phase 9a steps 5+ need a way to trigger a Backup Pro action (e.g.
+"create a backup") without a human clicking the main menu.
 `special://profile/autoexec.py`, the legacy XBMC/Kodi startup-script
-hook, was tried as a local-only, no-network alternative to JSON-RPC and
-does **not** exist in this installed Kodi 21.1 macOS build: a
+hook, was tried first as a local-only, no-network alternative and does
+**not** exist in this installed Kodi 21.1 macOS build: a
 marker-file-writing `autoexec.py` never executed across several real,
 fully-booted disposable launches (confirmed by polling the log and the
 marker file directly, not assumed), and the string "autoexec" does not
 appear anywhere in the Kodi binary or its bundled system resources. Do
-not reintroduce an autoexec.py-based trigger for this Kodi build. The
-remaining documented option is Kodi's JSON-RPC (`Addons.ExecuteAddon`),
-which requires first enabling and proving the webserver in the
-disposable profile — not yet built or tested. Until one of these is
-proven, Phase 9a steps 5+ (trigger a backup and inspect it, drive
-restore/recovery) remain blocked on this specific, narrow engineering
-gap, not on live-validation policy.
+not reintroduce an autoexec.py-based trigger for this Kodi build.
+
+Kodi's JSON-RPC is proven instead, against a real launch on this Mac:
+
+```sh
+./tools/kodi-test init
+./tools/kodi-test enable-webserver
+./tools/kodi-test install <path-to-worktree>
+./tools/kodi-test launch
+./tools/kodi-test jsonrpc JSONRPC.Ping                       # -> "pong"
+./tools/kodi-test enable-addon script.backup.pro              # a fresh install() is not enabled by default
+./tools/kodi-test execute-addon script.backup.pro mode=backup
+./tools/kodi-test stop
+```
+
+`enable-webserver` fails closed: it only writes `guisettings.xml` into a
+*fresh* disposable profile (before the first launch), refusing if one
+already exists, and always requires an authentication password (a
+fixed test-only account, loopback-only intent — never bind this to a
+non-disposable profile). The webserver coming up was confirmed via
+`CWebserver[<port>]: Started` in the disposable instance's own log;
+`JSONRPC.Ping` returned `"pong"` over HTTP Basic Auth; and
+`Addons.ExecuteAddon` was confirmed to genuinely invoke the add-on's
+`default.py`/`service.py` inside the running Kodi process — not merely
+accepted by the API — via a real Python traceback in the log naming
+those exact files and line numbers.
+
+**A separate, real gap surfaced by that same proof**: the triggered run
+failed with `ModuleNotFoundError: No module named 'dropbox'` (and
+`dateutil`). Backup Pro's `addon.xml` declares four dependency add-ons
+(`script.module.dateutil`, `script.module.future`,
+`script.module.dropbox`, `script.module.pyqrcode`) that `./tools/kodi-test
+install` does not provide — it only copies Backup Pro's own files, by
+design (see its allowlist above). A disposable profile therefore needs
+those four dependencies installed too before a triggered run can do
+real work; that has not been attempted yet. Phase 9a steps 5+ (create
+and inspect an actual backup, drive restore/recovery) remain blocked on
+this specific, narrow, now-well-understood gap — not on the trigger
+mechanism, which is proven, and not on live-validation policy.
 
 ## macOS and recovery assumptions
 

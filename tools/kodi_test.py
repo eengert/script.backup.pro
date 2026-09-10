@@ -25,10 +25,26 @@ hook, does NOT exist in this Kodi 21.1 macOS build - confirmed
 empirically on 2026-09-10 (a marker-file-writing autoexec.py never ran
 across several real launches, and the string "autoexec" does not occur
 anywhere in the Kodi binary or bundled system resources). Do not rely on
-autoexec.py here. The remaining documented path is JSON-RPC
-(`Addons.ExecuteAddon`), which requires first enabling and proving the
-webserver in the disposable profile - not yet built or tested; see
-docs/MAC_KODI_VALIDATION.md → "Evidence and automation boundary".
+autoexec.py here.
+
+JSON-RPC (`configure_webserver()` + `execute_addon()`) is proven instead
+(2026-09-10, real launch on this Mac): the disposable webserver comes up
+on the configured port (confirmed via `CWebserver[<port>]: Started` in
+the log), `JSONRPC.Ping` returns `pong` over HTTP Basic Auth, and
+`Addons.ExecuteAddon` genuinely invokes the add-on's `default.py`/
+`service.py` inside the running Kodi process (confirmed via a real
+Python traceback naming those exact files/line numbers in the log) -
+but only *after* first calling `Addons.SetAddonEnabled`, since a freshly
+`install()`-ed add-on is not enabled by default. Separately discovered:
+Backup Pro's declared `addon.xml` dependencies
+(`script.module.dateutil`, `script.module.future`,
+`script.module.dropbox`, `script.module.pyqrcode`) are not present in a
+disposable profile that only ran `install()` (which copies Backup Pro's
+own files only), so a triggered run currently fails on
+`ModuleNotFoundError` before doing any real work - a real, separate,
+not-yet-solved prerequisite for the next task, not a flaw in the
+trigger mechanism itself. See docs/MAC_KODI_VALIDATION.md → "Evidence
+and automation boundary" for the full picture.
 """
 from __future__ import annotations
 
@@ -264,6 +280,15 @@ def jsonrpc(method: str, params: dict | None = None, port: int = WEBSERVER_PORT,
         raise RuntimeError(f"JSON-RPC request failed: {exc}") from exc
 
 
+def enable_addon(addon_id: str, **jsonrpc_kwargs) -> dict:
+    """Enable an installed add-on via JSON-RPC. A freshly install()-ed
+    add-on is not enabled by default, and Addons.ExecuteAddon fails
+    against a disabled add-on (confirmed empirically 2026-09-10) - call
+    this before execute_addon() for a just-installed add-on."""
+    return jsonrpc("Addons.SetAddonEnabled",
+                    {"addonid": addon_id, "enabled": True}, **jsonrpc_kwargs)
+
+
 def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dict:
     """Invoke Addons.ExecuteAddon for addon_id via JSON-RPC - the
     documented way to trigger a Program add-on non-interactively,
@@ -289,6 +314,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("method")
     p.add_argument("params", nargs="?", type=json.loads, default=None,
                     help="JSON object, e.g. '{\"addonid\":\"script.backup.pro\"}'")
+    p = sub.add_parser("enable-addon")
+    p.add_argument("addon_id", nargs="?", default=ADDON_ID)
     p = sub.add_parser("execute-addon")
     p.add_argument("addon_id", nargs="?", default=ADDON_ID)
     p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
@@ -311,6 +338,8 @@ def main(argv: list[str]) -> int:
             result = status()
         elif args.command == "jsonrpc":
             result = jsonrpc(args.method, args.params)
+        elif args.command == "enable-addon":
+            result = enable_addon(args.addon_id)
         else:
             result = execute_addon(args.addon_id, args.params or None)
         print(json.dumps(result, indent=2, sort_keys=True))
