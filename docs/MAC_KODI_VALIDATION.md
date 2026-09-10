@@ -2,7 +2,9 @@
 
 This is the boundary for safe local validation of Backup Pro. It records what
 is established by the repository and what is not recoverable as a previously
-proven command. It must not be read as authorization to run Phase 9.
+proven command. This document defines the safe boundary for agent-executable
+Phase 9a validation and does not authorize Phase 9b human-only validation or
+testing on any non-disposable environment or device.
 
 ## Confirmed environment
 
@@ -109,25 +111,28 @@ add-on's own declared default, exactly like a real, untouched install.
   yet been exercised against a live disposable Kodi launch), and none of the
   Phase 9 Backup Pro backup/restore/recovery scenario steps below.
 
-## Safe validation procedure (planned, not yet completed)
+## Phase 9 validation procedure and current status
 
 The Phase 9 validation scenario:
 
-1. Run compile/package checks and the Python test suite.
-2. Create a disposable profile and verify its identity/path before Kodi starts.
-3. Launch Kodi against only that profile using the documented, human-verified
-   command. Do not use the normal profile.
-4. Install/update the development add-on with the allowlisted local copy above.
-5. Capture known AF3 settings/appearance/helper state.
-6. Create a Backup Pro archive and inspect its manifest, sizes, hashes and
-   exclusions.
-7. Change only the disposable profile, restore the archive, accept any skin
-   confirmation prompt, and verify live values, source hashes, rebuilt data and
-   persisted state.
-8. Restart Kodi and repeat the verification.
-9. Exercise pending-recovery/rollback and compare installed/package files.
-10. Preserve machine-verifiable results, then reset or discard only the
-    disposable profile.
+1. **Complete/proven.** Run compile/package checks and the Python test suite.
+2. **Complete/proven.** Create a disposable profile and verify its
+   identity/path before Kodi starts.
+3. **Complete/proven.** Launch Kodi against only that profile using the
+   documented, human-verified command. Do not use the normal profile.
+4. **Complete/proven.** Install/update the development add-on with the
+   allowlisted local copy above.
+5. **Complete/proven.** Capture known AF3 settings/appearance/helper state.
+6. **Remaining.** Create a Backup Pro archive and inspect its manifest, sizes,
+   hashes and exclusions.
+7. **Remaining.** Change only the disposable profile, restore the archive,
+   accept any skin confirmation prompt, and verify live values, source
+   hashes, rebuilt data and persisted state.
+8. **Remaining.** Restart Kodi and repeat the verification.
+9. **Remaining.** Exercise pending-recovery/rollback and compare
+   installed/package files.
+10. **Cleanup/reset, as applicable.** Preserve machine-verifiable results,
+    then reset or discard only the disposable profile.
 
 The planned checks can use Kodi's own UI, Kodi built-ins/JSON-RPC (now
 established and tested — see "Evidence and automation boundary" below),
