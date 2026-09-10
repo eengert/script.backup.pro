@@ -71,6 +71,11 @@ class FakeHost:
             raise AssertionError('verified settings for an inactive skin')
         self._event('verify_loaded_settings', skin, values)
 
+    def verify_rollback_settings_unchanged(self, skin, document):
+        if self.skin != skin:
+            raise AssertionError('verified settings for an inactive skin')
+        self._event('verify_rollback_settings_unchanged', skin, document)
+
     def apply_appearance(self, values):
         self._event('apply_appearance', values)
 
@@ -488,7 +493,7 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertLess(rollback_stage, activate)
         self.assertLess(activate, rebuild)
 
-    def test_rollback_restores_absent_settings_without_live_verification(self):
+    def test_rollback_restores_absent_settings_with_raw_verification(self):
         host = FakeHost()
         pending = self.stage(host)
         host.events = []
@@ -504,6 +509,15 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertFalse(any(
             event[0] == 'verify_loaded_settings'
             for event in host.events))
+        raw_checks = [
+            event for event in host.events
+            if event[0] == 'verify_rollback_settings_unchanged']
+        # Once before rebuild (post-activation) and once after rebuild
+        # (post-ReloadSkin), matching the parsed-values verification path.
+        self.assertEqual(2, len(raw_checks))
+        for event in raw_checks:
+            self.assertEqual(skin_coordinator.AF3_ID, event[1])
+            self.assertIsNone(event[2])
         self.assertEqual('rolled_back', skin_transaction.skin_transaction_status(
             self.profile, self.rollback, pending['rollback'],
             pending['transaction_id']))
@@ -525,6 +539,12 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertEqual(malformed, rollback_event[2])
         self.assertIsNone(rollback_event[3])
         self.assertFalse(result['settings_verified'])
+        raw_checks = [
+            event for event in host.events
+            if event[0] == 'verify_rollback_settings_unchanged']
+        self.assertEqual(2, len(raw_checks))
+        for event in raw_checks:
+            self.assertEqual(malformed, event[2])
 
     def test_rollback_rejects_target_that_no_longer_matches_snapshot(self):
         helper = next(path for path in self.files if path != SETTINGS_PATH)

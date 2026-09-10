@@ -455,6 +455,9 @@ def rollback_skin_restore(profile_path, rollback_root, pending_path, host):
         if target['skin_settings'] is not None:
             _call(host, 'verify_loaded_settings', AF3_ID,
                   target['skin_settings'])
+        else:
+            _call(host, 'verify_rollback_settings_unchanged', AF3_ID,
+                  settings_document)
         _call(host, 'apply_appearance', target['appearance'])
 
         _progress(host, 75, 'Rebuilding previous AF3 menus and widgets')
@@ -468,6 +471,9 @@ def rollback_skin_restore(profile_path, rollback_root, pending_path, host):
         if target['skin_settings'] is not None:
             _call(host, 'verify_loaded_settings', AF3_ID,
                   target['skin_settings'])
+        else:
+            _call(host, 'verify_rollback_settings_unchanged', AF3_ID,
+                  settings_document)
         _verify_helper_sources(profile_path, target['helper_hashes'])
         clear_pending_state(pending_path, pending)
         _progress(host, 100, 'AF3 rollback complete')

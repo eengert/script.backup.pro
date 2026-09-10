@@ -171,6 +171,32 @@ class KodiSkinHost:
         raise KodiSkinHostError(
             'Kodi did not load every restored skin setting')
 
+    def verify_rollback_settings_unchanged(self, skin, document):
+        """Verify Kodi has not altered the exact on-disk rollback bytes.
+
+        Used for the absent/malformed-original rollback case, where no
+        parsed setting values exist to check through the live settings
+        RPC (`verify_loaded_settings`). Kodi is known to sometimes persist
+        its own in-memory skin state to disk around activation/reload;
+        this catches that silently overwriting the restored bytes.
+        """
+        if self.active_skin() != skin:
+            raise KodiSkinHostError(
+                'target skin is not active for settings verification')
+        path = self._settings_path(skin)
+        exists = self.xbmcvfs.exists(path)
+        if document is None:
+            if exists:
+                raise KodiSkinHostError(
+                    'Kodi created skin settings that were previously absent')
+            return
+        if not exists:
+            raise KodiSkinHostError(
+                'Kodi removed the staged rollback skin settings')
+        if self._read(path) != document:
+            raise KodiSkinHostError(
+                'Kodi altered the staged rollback skin settings')
+
     def apply_appearance(self, values):
         try:
             checked = checked_appearance(values)

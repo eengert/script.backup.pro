@@ -273,6 +273,40 @@ class KodiSkinHostTests(unittest.TestCase):
         with self.assertRaisesRegex(KodiSkinHostError, 'did not load'):
             self.host.verify_loaded_settings(AF3_ID, self.values)
 
+    def test_verify_rollback_settings_unchanged_accepts_matching_bytes(self):
+        path = self.host._settings_path(AF3_ID)
+        self.vfs.files[path] = self.document
+        self.host.verify_rollback_settings_unchanged(AF3_ID, self.document)
+
+    def test_verify_rollback_settings_unchanged_detects_kodi_alteration(self):
+        path = self.host._settings_path(AF3_ID)
+        self.vfs.files[path] = skin_settings_document([
+            {'id': 'kodi.default', 'type': 'boolean', 'value': True},
+        ])
+        with self.assertRaisesRegex(KodiSkinHostError, 'altered'):
+            self.host.verify_rollback_settings_unchanged(
+                AF3_ID, self.document)
+
+    def test_verify_rollback_settings_unchanged_detects_removed_file(self):
+        with self.assertRaisesRegex(KodiSkinHostError, 'removed'):
+            self.host.verify_rollback_settings_unchanged(
+                AF3_ID, self.document)
+
+    def test_verify_rollback_settings_unchanged_accepts_absent_document(self):
+        self.host.verify_rollback_settings_unchanged(AF3_ID, None)
+
+    def test_verify_rollback_settings_unchanged_detects_created_file(self):
+        path = self.host._settings_path(AF3_ID)
+        self.vfs.files[path] = self.document
+        with self.assertRaisesRegex(KodiSkinHostError, 'created'):
+            self.host.verify_rollback_settings_unchanged(AF3_ID, None)
+
+    def test_verify_rollback_settings_unchanged_requires_active_skin(self):
+        self.xbmc.skin = 'skin.estuary'
+        with self.assertRaisesRegex(KodiSkinHostError, 'not active'):
+            self.host.verify_rollback_settings_unchanged(
+                AF3_ID, self.document)
+
     def test_apply_appearance_sets_only_changed_and_verifies(self):
         self.xbmc.appearance = {
             'lookandfeel.skintheme': 'SKINDEFAULT',
