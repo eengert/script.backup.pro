@@ -17,6 +17,18 @@ Everything this module writes to, resets, or reports as the disposable
 Kodi location is anchored under KODI_APPDATA_DIR/KODI_LOG_FILE, matching
 that observed behavior - not a `.kodi/` layout, which real Kodi 21.1 does
 not use for its profile or logs on macOS.
+
+Non-interactive script triggering (needed for Phase 9a steps 5+, e.g.
+"trigger a Backup Pro backup" without a human clicking the main menu):
+`special://profile/autoexec.py`, the legacy XBMC/Kodi startup-script
+hook, does NOT exist in this Kodi 21.1 macOS build - confirmed
+empirically on 2026-09-10 (a marker-file-writing autoexec.py never ran
+across several real launches, and the string "autoexec" does not occur
+anywhere in the Kodi binary or bundled system resources). Do not rely on
+autoexec.py here. The remaining documented path is JSON-RPC
+(`Addons.ExecuteAddon`), which requires first enabling and proving the
+webserver in the disposable profile - not yet built or tested; see
+docs/MAC_KODI_VALIDATION.md → "Evidence and automation boundary".
 """
 from __future__ import annotations
 
@@ -29,6 +41,7 @@ import signal
 import subprocess
 import sys
 import time
+from xml.sax.saxutils import escape as _xml_escape
 
 PROJECT = Path(__file__).resolve().parents[1]
 ROOT = PROJECT / ".kodi-test"
@@ -134,12 +147,13 @@ def launch() -> None:
         raise RuntimeError(f"Kodi exited during launch (status {proc.returncode})")
 
 
-def stop() -> None:
+def stop(timeout_seconds: float = 15.0) -> None:
     info = status()
     if not info["running"]:
         return
     os.kill(int(info["pid"]), signal.SIGTERM)
-    for _ in range(50):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
         if not status()["running"]:
             return
         time.sleep(0.1)
@@ -172,6 +186,24 @@ def install(source: Path) -> None:
             shutil.copy2(src, dst)
 
 
+def configure(addon_id: str, values: dict[str, str]) -> None:
+    """Pre-seed disposable per-profile add-on settings before launch (a
+    scripted, reversible edit confined to the disposable profile - not a
+    live UI action). Any setting not listed here still resolves to that
+    add-on's own declared default, exactly like a real, untouched
+    install."""
+    verify_isolation()
+    if not values:
+        raise RuntimeError("no settings given")
+    settings_dir = KODI_USERDATA_DIR / "addon_data" / addon_id
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    lines = ['<settings version="2">']
+    for key, value in values.items():
+        lines.append(f'    <setting id="{_xml_escape(key)}">{_xml_escape(str(value))}</setting>')
+    lines.append('</settings>\n')
+    (settings_dir / "settings.xml").write_text("\n".join(lines), encoding="utf-8")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -179,6 +211,9 @@ def main(argv: list[str]) -> int:
         sub.add_parser(name)
     p = sub.add_parser("install")
     p.add_argument("source", nargs="?", type=Path, default=PROJECT)
+    p = sub.add_parser("configure")
+    p.add_argument("addon_id")
+    p.add_argument("settings", nargs="+", help="key=value pairs")
     args = parser.parse_args(argv)
     try:
         if args.command == "verify": result = verify_isolation()
@@ -188,7 +223,11 @@ def main(argv: list[str]) -> int:
         elif args.command == "launch": launch(); result = status()
         elif args.command == "stop": stop(); result = status()
         elif args.command == "restart": stop(); launch(); result = status()
-        else: install(args.source); result = status()
+        elif args.command == "install": install(args.source); result = status()
+        else:
+            values = dict(item.split("=", 1) for item in args.settings)
+            configure(args.addon_id, values)
+            result = status()
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (OSError, RuntimeError, ValueError) as exc:

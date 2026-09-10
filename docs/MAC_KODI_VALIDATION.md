@@ -73,6 +73,17 @@ The allowlist copies only `addon.xml`, `default.py`, `service.py`, artwork and
 tests, bytecode, docs, Git and agent files. Source paths outside the project
 are refused.
 
+Pre-seed a disposable add-on's per-profile settings before launch — a
+scripted, reversible edit confined to the disposable profile, not a live
+UI action:
+
+```sh
+./tools/kodi-test configure script.backup.pro remote_path=<local-dest> remote_selection=0
+```
+
+Only the given settings are written; anything else resolves to that
+add-on's own declared default, exactly like a real, untouched install.
+
 ## What has actually been proven so far
 
 - `./tools/kodi-test verify` succeeds on this Mac from both the Codex and
@@ -137,6 +148,24 @@ unavailable credentials, and any failure that threatens a non-disposable
 profile. Phase 9 cannot be marked complete from unit tests alone — the harness
 launch/stop proof above is harness validation, not a Phase 9 result, and Phase
 9 is not marked complete or attempted by this work.
+
+**Non-interactive script triggering — a real gap, not yet solved
+(2026-09-10)**: Phase 9a steps 5+ need a way to trigger a Backup Pro
+action (e.g. "create a backup") without a human clicking the main menu.
+`special://profile/autoexec.py`, the legacy XBMC/Kodi startup-script
+hook, was tried as a local-only, no-network alternative to JSON-RPC and
+does **not** exist in this installed Kodi 21.1 macOS build: a
+marker-file-writing `autoexec.py` never executed across several real,
+fully-booted disposable launches (confirmed by polling the log and the
+marker file directly, not assumed), and the string "autoexec" does not
+appear anywhere in the Kodi binary or its bundled system resources. Do
+not reintroduce an autoexec.py-based trigger for this Kodi build. The
+remaining documented option is Kodi's JSON-RPC (`Addons.ExecuteAddon`),
+which requires first enabling and proving the webserver in the
+disposable profile — not yet built or tested. Until one of these is
+proven, Phase 9a steps 5+ (trigger a backup and inspect it, drive
+restore/recovery) remain blocked on this specific, narrow engineering
+gap, not on live-validation policy.
 
 ## macOS and recovery assumptions
 

@@ -98,6 +98,44 @@ class KodiHarnessTests(unittest.TestCase):
             (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE) = old
 
+    def test_configure_writes_only_the_given_settings(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                MODULE.configure("script.backup.pro", {"remote_path": "/tmp/dest",
+                                                         "remote_selection": "0"})
+                settings_path = (MODULE.KODI_USERDATA_DIR / "addon_data"
+                                  / "script.backup.pro" / "settings.xml")
+                text = settings_path.read_text(encoding="utf-8")
+                self.assertIn('<setting id="remote_path">/tmp/dest</setting>', text)
+                self.assertIn('<setting id="remote_selection">0</setting>', text)
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE) = old
+
+    def test_configure_escapes_xml_special_characters(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                MODULE.configure("script.backup.pro", {"remote_path": "/tmp/a&b<c>"})
+                settings_path = (MODULE.KODI_USERDATA_DIR / "addon_data"
+                                  / "script.backup.pro" / "settings.xml")
+                text = settings_path.read_text(encoding="utf-8")
+                self.assertIn("&amp;", text)
+                self.assertIn("&lt;", text)
+                self.assertNotIn("/tmp/a&b<c>", text)
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE) = old
+
+    def test_configure_requires_at_least_one_setting(self):
+        with self.assertRaises(RuntimeError):
+            MODULE.configure("script.backup.pro", {})
+
     def test_install_allowlist_excludes_development_files(self):
         with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
             source = Path(d) / "addon"
