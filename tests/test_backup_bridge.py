@@ -358,6 +358,40 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
             call[0] == 'ok' and 'Recovery data was preserved' in call[2]
             for call in dialog.calls))
 
+    def test_finish_closes_progress_dialog_before_rebuilding(self):
+        # AF3's rebuild mechanism activates Kodi windows; a modal progress
+        # dialog left open during that call blocks the activation and
+        # hangs the rebuild. The dialog must close before finish_skin_
+        # restore() runs, not merely afterward.
+        order = self.calls
+        backup_module.BackupProgressBar = lambda *_a, **_k: type(
+            'Progress', (), {
+                'create': lambda self, *_a, **_k: None,
+                'close': lambda self: order.append('progress_close'),
+            })()
+        dialog = FakeRecoveryDialog(select_return=0)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'finish_rebuild'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['progress_close', 'finish', 'progress_close'],
+                          self.calls)
+
+    def test_rollback_closes_progress_dialog_before_rebuilding(self):
+        order = self.calls
+        backup_module.BackupProgressBar = lambda *_a, **_k: type(
+            'Progress', (), {
+                'create': lambda self, *_a, **_k: None,
+                'close': lambda self: order.append('progress_close'),
+            })()
+        dialog = FakeRecoveryDialog(select_return=1)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['progress_close', 'rollback', 'progress_close'],
+                          self.calls)
+
     def test_background_check_never_uses_dialogs_when_pending(self):
         backup_module.xbmcgui.Dialog = RefusingDialog
         instance = self._instance()
@@ -776,6 +810,8 @@ class BackupBridgeTests(unittest.TestCase):
             def notification(self, title, message, *_args):
                 messages.append(('notification', title, message))
 
+        order = []
+
         class Progress:
             def checkCancel(self):
                 return False
@@ -784,7 +820,15 @@ class BackupBridgeTests(unittest.TestCase):
                 pass
 
             def close(self):
-                pass
+                order.append('progress_close')
+
+        class OrderedFakeHost(FakeHost):
+            def _event(self, name, *values):
+                order.append('host:' + name)
+                return super(OrderedFakeHost, self)._event(name, *values)
+
+        def make_host():
+            return OrderedFakeHost()
 
         try:
             with tempfile.TemporaryDirectory() as directory:
@@ -801,13 +845,21 @@ class BackupBridgeTests(unittest.TestCase):
                 instance.progressBar = Progress()
                 instance._readRestoreBytes = lambda path: files[
                     path.split('/', 1)[1]]
-                instance._makeSkinHost = FakeHost
+                instance._makeSkinHost = make_host
 
                 self.assertTrue(instance._restoreSkinConfig(manifest))
                 self.assertFalse(os.path.exists(os.path.join(
                     data, 'pending-skin-restore.json')))
                 self.assertTrue(any(item[0] == 'notification'
                                     for item in messages))
+                # The progress dialog must close before finish_skin_
+                # restore() activates AF3 (only it, not staging, calls
+                # activate_skin) -- a modal dialog left open blocks the
+                # window activation AF3's rebuild needs and hangs it.
+                self.assertIn('progress_close', order)
+                self.assertIn('host:activate_skin', order)
+                self.assertLess(order.index('progress_close'),
+                                 order.index('host:activate_skin'))
         finally:
             backup_module.utils.data_dir = original_data_dir
             backup_module.xbmcvfs.translatePath = original_translate

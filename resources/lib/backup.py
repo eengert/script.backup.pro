@@ -624,6 +624,10 @@ class XbmcBackup:
                     'Fuse 3. Choose Yes when Kodi asks to keep the skin; '
                     'verification will continue afterward.') is False:
                 return False
+            # AF3's rebuild mechanism activates windows through Kodi's
+            # skin-variables add-on; a modal progress dialog left open
+            # here blocks that activation and hangs the rebuild.
+            self.progressBar.close()
             summary = finish_skin_restore(
                 profile, rollback_root, pending_path, host)
             xbmcgui.Dialog().notification(
@@ -714,12 +718,17 @@ class XbmcBackup:
                         'resume_staging', 'restage_settings'):
                     resume_skin_restore_staging(
                         profile, rollback_root, pending_path, host)
+                # See the matching comment in _restoreSkinConfig(): AF3's
+                # rebuild mechanism needs to activate windows, which a
+                # modal progress dialog would block.
+                self.progressBar.close()
                 finish_skin_restore(profile, rollback_root, pending_path, host)
                 xbmcgui.Dialog().notification(
                     utils.getString(30010),
                     'The imported Arctic Fuse 3 configuration was restored '
                     'and verified.')
             else:
+                self.progressBar.close()
                 rollback_skin_restore(
                     profile, rollback_root, pending_path, host)
                 xbmcgui.Dialog().notification(
