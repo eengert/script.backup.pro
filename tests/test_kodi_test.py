@@ -198,6 +198,55 @@ class KodiHarnessTests(unittest.TestCase):
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
              MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
 
+    def test_copy_addon_closure_skips_addons_bundled_with_kodi_itself(self):
+        # regression guard: script.module.pil (needed transitively for
+        # skin.arctic.fuse.3) was wrongly reported "missing" because
+        # this function only ever checked the real profile's addons/ -
+        # it's actually bundled inside Kodi.app itself and therefore
+        # already visible to every profile, including a fresh
+        # disposable one, with nothing to copy - confirmed empirically
+        # 2026-09-10.
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR,
+               MODULE.KODI_SYSTEM_ADDONS_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+
+                system_dir = d / "fake-system-addons" / "script.module.bundled"
+                system_dir.mkdir(parents=True)
+                (system_dir / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.profile_only" version="1.0.0"/>'
+                    '</requires></addon>')
+                MODULE.KODI_SYSTEM_ADDONS_DIR = d / "fake-system-addons"
+
+                fake_real_addons = d / "fake-real-profile" / "addons"
+                profile_only_dir = fake_real_addons / "script.module.profile_only"
+                profile_only_dir.mkdir(parents=True)
+                (profile_only_dir / "marker.py").write_text("# profile only\n")
+                (profile_only_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
+                MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile"
+
+                installed = MODULE._copy_addon_closure(["script.module.bundled"])
+
+                # the bundled add-on itself was not copied ...
+                self.assertEqual(installed, ["script.module.profile_only"])
+                self.assertFalse(
+                    (MODULE.KODI_ADDONS_DIR / "script.module.bundled").exists())
+                # ... but its own dependency, only available from the
+                # real profile, still was
+                self.assertTrue((MODULE.KODI_ADDONS_DIR / "script.module.profile_only"
+                                  / "marker.py").exists())
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR,
+             MODULE.KODI_SYSTEM_ADDONS_DIR) = old
+
     def test_install_skin_copies_the_skin_and_its_own_dependencies(self):
         old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
                MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,

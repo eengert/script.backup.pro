@@ -96,6 +96,12 @@ KODI_LOG_FILE = HOME / "Library" / "Logs" / "kodi.log"
 KODI_GUISETTINGS_FILE = KODI_USERDATA_DIR / "guisettings.xml"
 PID_FILE = ROOT / "kodi.pid"
 KODI = Path("/Applications/Kodi.app/Contents/MacOS/Kodi")
+# add-ons bundled inside the Kodi.app installation itself (special://xbmc/addons/)
+# - visible to every profile automatically, including a brand-new disposable
+# one, with no per-profile copying at all. Confirmed empirically 2026-09-10:
+# script.module.pil and repository.xbmc.org both live here, not in any
+# per-profile addons/ directory.
+KODI_SYSTEM_ADDONS_DIR = KODI.parent.parent / "Resources" / "Kodi" / "addons"
 ADDON_ID = "script.backup.pro"
 AF3_SKIN_ID = "skin.arctic.fuse.3"
 WEBSERVER_PORT = 8899
@@ -250,10 +256,17 @@ def _copy_addon_closure(seed_ids: list[str]) -> list[str]:
     """Copy each of seed_ids - and every add-on any of them declares as
     a dependency, transitively - from the real, normal Kodi profile
     into the disposable profile: read-only from the real profile,
-    confined write to the disposable profile only. Refuses a missing
-    add-on or a symlinked source. Shared by install_dependencies() and
-    install_skin(); both need the same "copy this and everything it
-    transitively needs" behavior."""
+    confined write to the disposable profile only. An add-on already
+    bundled inside the Kodi.app installation itself
+    (KODI_SYSTEM_ADDONS_DIR) is skipped entirely - it's already visible
+    to every profile, including a fresh disposable one, with no copying
+    needed (confirmed empirically 2026-09-10: script.module.pil lives
+    there, not in any per-profile addons/ directory - the earlier
+    "missing dependency" finding was this function only ever checking
+    the profile location). Refuses an add-on found in neither location,
+    or a symlinked profile source. Shared by install_dependencies() and
+    install_skin(); both need the same "make this and everything it
+    transitively needs available" behavior."""
     verify_isolation()
     installed = []
     seen: set[str] = set()
@@ -263,10 +276,18 @@ def _copy_addon_closure(seed_ids: list[str]) -> list[str]:
         if addon_id in seen:
             continue
         seen.add(addon_id)
+        system_source = KODI_SYSTEM_ADDONS_DIR / addon_id
+        if system_source.is_dir():
+            # already bundled with Kodi itself - nothing to copy, but
+            # still walk its own declared dependencies in case one of
+            # those needs to come from the real profile instead
+            pending.extend(_declared_dependencies(system_source))
+            continue
         real_source = NORMAL_APPDATA_DIR / "addons" / addon_id
         if not real_source.is_dir():
             raise RuntimeError(
-                f"add-on not found in the real Kodi profile: {addon_id}")
+                "add-on not found in the Kodi system bundle or the "
+                f"real Kodi profile: {addon_id}")
         if real_source.is_symlink():
             raise RuntimeError(f"symlink is not allowed: {real_source}")
         destination = KODI_ADDONS_DIR / addon_id
