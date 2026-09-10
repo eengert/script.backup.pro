@@ -136,6 +136,120 @@ class KodiHarnessTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             MODULE.configure("script.backup.pro", {})
 
+    def test_configure_webserver_writes_expected_settings(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.KODI_GUISETTINGS_FILE)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                MODULE.KODI_GUISETTINGS_FILE = MODULE.KODI_USERDATA_DIR / "guisettings.xml"
+                MODULE.configure_webserver(port=1234, username="u", password="p")
+                text = MODULE.KODI_GUISETTINGS_FILE.read_text(encoding="utf-8")
+                self.assertIn('<setting id="services.webserver">true</setting>', text)
+                self.assertIn('<setting id="services.webserverport">1234</setting>', text)
+                self.assertIn(
+                    '<setting id="services.webserverauthentication">true</setting>', text)
+                self.assertIn('<setting id="services.webserverusername">u</setting>', text)
+                self.assertIn('<setting id="services.webserverpassword">p</setting>', text)
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.KODI_GUISETTINGS_FILE) = old
+
+    def test_configure_webserver_refuses_when_guisettings_already_exists(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.KODI_GUISETTINGS_FILE)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                MODULE.KODI_GUISETTINGS_FILE = MODULE.KODI_USERDATA_DIR / "guisettings.xml"
+                MODULE.KODI_USERDATA_DIR.mkdir(parents=True, exist_ok=True)
+                MODULE.KODI_GUISETTINGS_FILE.write_text(
+                    '<settings version="2"></settings>', encoding="utf-8")
+                with self.assertRaises(RuntimeError):
+                    MODULE.configure_webserver(port=1234, username="u", password="p")
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.KODI_GUISETTINGS_FILE) = old
+
+    def test_configure_webserver_requires_a_password(self):
+        with self.assertRaises(RuntimeError):
+            MODULE.configure_webserver(port=1234, username="u", password="")
+
+    def test_jsonrpc_posts_expected_request_with_basic_auth(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"jsonrpc": "2.0", "id": 1, "result": "pong"}'
+
+        def fake_urlopen(request, timeout=None):
+            captured["url"] = request.full_url
+            captured["method"] = request.get_method()
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = MODULE.json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        original = MODULE.urllib.request.urlopen
+        MODULE.urllib.request.urlopen = fake_urlopen
+        try:
+            result = MODULE.jsonrpc("JSONRPC.Ping", port=1234, username="u",
+                                     password="p", timeout=5)
+            self.assertEqual(result["result"], "pong")
+            self.assertEqual(captured["url"], "http://127.0.0.1:1234/jsonrpc")
+            self.assertEqual(captured["method"], "POST")
+            self.assertEqual(captured["body"]["method"], "JSONRPC.Ping")
+            self.assertEqual(captured["timeout"], 5)
+            import base64
+            expected_auth = "Basic " + base64.b64encode(b"u:p").decode("ascii")
+            self.assertEqual(captured["headers"]["Authorization"], expected_auth)
+        finally:
+            MODULE.urllib.request.urlopen = original
+
+    def test_jsonrpc_wraps_connection_errors(self):
+        def failing_urlopen(_request, timeout=None):
+            raise MODULE.urllib.error.URLError("connection refused")
+
+        original = MODULE.urllib.request.urlopen
+        MODULE.urllib.request.urlopen = failing_urlopen
+        try:
+            with self.assertRaises(RuntimeError):
+                MODULE.jsonrpc("JSONRPC.Ping")
+        finally:
+            MODULE.urllib.request.urlopen = original
+
+    def test_execute_addon_builds_addons_executeaddon_call(self):
+        captured = {}
+
+        def fake_jsonrpc(method, params=None, **kwargs):
+            captured["method"] = method
+            captured["params"] = params
+            captured["kwargs"] = kwargs
+            return {"result": "OK"}
+
+        original = MODULE.jsonrpc
+        MODULE.jsonrpc = fake_jsonrpc
+        try:
+            result = MODULE.execute_addon(
+                "script.backup.pro", ["mode=backup"], port=1234)
+            self.assertEqual(result["result"], "OK")
+            self.assertEqual(captured["method"], "Addons.ExecuteAddon")
+            self.assertEqual(captured["params"]["addonid"], "script.backup.pro")
+            self.assertEqual(captured["params"]["params"], ["mode=backup"])
+            self.assertEqual(captured["kwargs"], {"port": 1234})
+        finally:
+            MODULE.jsonrpc = original
+
     def test_install_allowlist_excludes_development_files(self):
         with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
             source = Path(d) / "addon"

@@ -33,6 +33,7 @@ docs/MAC_KODI_VALIDATION.md → "Evidence and automation boundary".
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,8 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from xml.sax.saxutils import escape as _xml_escape
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -50,9 +53,13 @@ KODI_APPDATA_DIR = HOME / "Library" / "Application Support" / "Kodi"
 KODI_USERDATA_DIR = KODI_APPDATA_DIR / "userdata"
 KODI_ADDONS_DIR = KODI_APPDATA_DIR / "addons"
 KODI_LOG_FILE = HOME / "Library" / "Logs" / "kodi.log"
+KODI_GUISETTINGS_FILE = KODI_USERDATA_DIR / "guisettings.xml"
 PID_FILE = ROOT / "kodi.pid"
 KODI = Path("/Applications/Kodi.app/Contents/MacOS/Kodi")
 ADDON_ID = "script.backup.pro"
+WEBSERVER_PORT = 8899
+WEBSERVER_USERNAME = "kodi-test"
+WEBSERVER_PASSWORD = "kodi-test-only"
 
 # the real, normal Kodi profile location this harness must never overlap
 NORMAL_APPDATA_DIR = Path.home() / "Library" / "Application Support" / "Kodi"
@@ -204,6 +211,69 @@ def configure(addon_id: str, values: dict[str, str]) -> None:
     (settings_dir / "settings.xml").write_text("\n".join(lines), encoding="utf-8")
 
 
+def configure_webserver(port: int = WEBSERVER_PORT, username: str = WEBSERVER_USERNAME,
+                         password: str = WEBSERVER_PASSWORD) -> None:
+    """Enable Kodi's built-in webserver (needed for JSON-RPC over HTTP)
+    inside the disposable profile only, with authentication always on.
+    Fails closed: refuses if guisettings.xml already exists, since a
+    safe partial merge of an already-populated core-settings file isn't
+    implemented here - always call this immediately after init()/reset(),
+    before the disposable profile's first launch."""
+    verify_isolation()
+    if not password:
+        raise RuntimeError("a webserver password is required")
+    if KODI_GUISETTINGS_FILE.exists():
+        raise RuntimeError(
+            "guisettings.xml already exists; configure_webserver() only "
+            "supports a fresh disposable profile - call it right after "
+            "init()/reset(), before the first launch")
+    KODI_USERDATA_DIR.mkdir(parents=True, exist_ok=True)
+    values = {
+        "services.webserver": "true",
+        "services.webserverport": str(int(port)),
+        "services.webserverauthentication": "true",
+        "services.webserverusername": username,
+        "services.webserverpassword": password,
+    }
+    lines = ['<settings version="2">']
+    for key, value in values.items():
+        lines.append(f'    <setting id="{_xml_escape(key)}">{_xml_escape(str(value))}</setting>')
+    lines.append('</settings>\n')
+    KODI_GUISETTINGS_FILE.write_text("\n".join(lines), encoding="utf-8")
+
+
+def jsonrpc(method: str, params: dict | None = None, port: int = WEBSERVER_PORT,
+            username: str = WEBSERVER_USERNAME, password: str = WEBSERVER_PASSWORD,
+            timeout: float = 10.0) -> dict:
+    """POST a JSON-RPC 2.0 request to the disposable Kodi instance's
+    webserver. Always targets 127.0.0.1 (loopback) on the given port -
+    this harness has no concept of, and never accepts, a remote host."""
+    payload: dict = {"jsonrpc": "2.0", "id": 1, "method": method}
+    if params is not None:
+        payload["params"] = params
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{int(port)}/jsonrpc", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    request.add_header("Authorization", f"Basic {credentials}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"JSON-RPC request failed: {exc}") from exc
+
+
+def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dict:
+    """Invoke Addons.ExecuteAddon for addon_id via JSON-RPC - the
+    documented way to trigger a Program add-on non-interactively,
+    without a human selecting it from the main menu."""
+    rpc_params: dict = {"addonid": addon_id}
+    if params is not None:
+        rpc_params["params"] = params
+    return jsonrpc("Addons.ExecuteAddon", rpc_params, **jsonrpc_kwargs)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -214,6 +284,14 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("configure")
     p.add_argument("addon_id")
     p.add_argument("settings", nargs="+", help="key=value pairs")
+    sub.add_parser("enable-webserver")
+    p = sub.add_parser("jsonrpc")
+    p.add_argument("method")
+    p.add_argument("params", nargs="?", type=json.loads, default=None,
+                    help="JSON object, e.g. '{\"addonid\":\"script.backup.pro\"}'")
+    p = sub.add_parser("execute-addon")
+    p.add_argument("addon_id", nargs="?", default=ADDON_ID)
+    p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
     args = parser.parse_args(argv)
     try:
         if args.command == "verify": result = verify_isolation()
@@ -224,10 +302,17 @@ def main(argv: list[str]) -> int:
         elif args.command == "stop": stop(); result = status()
         elif args.command == "restart": stop(); launch(); result = status()
         elif args.command == "install": install(args.source); result = status()
-        else:
+        elif args.command == "configure":
             values = dict(item.split("=", 1) for item in args.settings)
             configure(args.addon_id, values)
             result = status()
+        elif args.command == "enable-webserver":
+            configure_webserver()
+            result = status()
+        elif args.command == "jsonrpc":
+            result = jsonrpc(args.method, args.params)
+        else:
+            result = execute_addon(args.addon_id, args.params or None)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (OSError, RuntimeError, ValueError) as exc:
