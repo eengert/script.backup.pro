@@ -39,6 +39,7 @@ from resources.lib.skin_adapter import (
 )
 from resources.lib.skin_coordinator import (
     SkinCoordinatorError,
+    discard_prepared_skin_restore,
     finish_skin_restore,
     inspect_pending_restore,
     resume_skin_restore_staging,
@@ -680,6 +681,8 @@ class XbmcBackup:
                 'or settings were changed.\n\n{}'.format(
                     description['reason']))
             return True
+        if description['kind'] == 'discard':
+            return self._discardPendingSkinRestore()
 
         options = []
         if description['continue_available']:
@@ -733,6 +736,37 @@ class XbmcBackup:
                 self.progressBar.close()
             except Exception:
                 pass
+
+        return self.inspectSkinRecovery()['kind'] != 'none'
+
+    def _discardPendingSkinRestore(self):
+        """Discard a 'prepared'-phase restore that never touched a file.
+
+        Returns True if recovery still blocks unrelated actions (the user
+        declined, or discarding failed safely), or False once discarded.
+        """
+        if not xbmcgui.Dialog().yesno(
+                'Arctic Fuse 3 restore recovery',
+                'The imported Arctic Fuse 3 configuration was never '
+                'applied to any file. It can be safely discarded so you '
+                'can restart the restore.\n\nDiscard the incomplete '
+                'restore attempt?'):
+            return True
+
+        profile, rollback_root, pending_path = self._skinRecoveryPaths()
+        try:
+            discard_prepared_skin_restore(profile, rollback_root, pending_path)
+            xbmcgui.Dialog().notification(
+                utils.getString(30010),
+                'The incomplete Arctic Fuse 3 restore attempt was '
+                'discarded. Nothing was changed.')
+        except (RuntimeError, OSError, ValueError) as error:
+            utils.log('AF3 recovery discard stopped safely: %s' % error,
+                      xbmc.LOGWARNING)
+            xbmcgui.Dialog().ok(
+                utils.getString(30010),
+                'Arctic Fuse 3 recovery did not complete. Recovery data was '
+                'preserved.\n\n{}'.format(error))
 
         return self.inspectSkinRecovery()['kind'] != 'none'
 

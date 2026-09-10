@@ -14,7 +14,7 @@ CONTINUE_ROLLBACK_ACTIONS = frozenset((
 ROLLBACK_ONLY_ACTIONS = frozenset((
     'rollback_transaction', 'finish_rollback_rebuild',
 ))
-UNSAFE_ACTIONS = frozenset((
+DISCARD_ACTIONS = frozenset((
     'restart_preflight', 'recover_unlinked_transaction',
 ))
 
@@ -32,9 +32,16 @@ def describe_recovery_action(inspection):
         `continue_available` and `rollback_available` say which of
         "continue the imported configuration" / "restore the previous
         configuration" may be offered.
-      - 'diagnostic': the safe coordinator primitives for this state do not
-        exist yet (or the state is otherwise unrecoverable here). Only a
-        diagnostic may be shown; pending/rollback state must not be touched.
+      - 'discard': the restore never mutated a profile file (its pending
+        record is still in the 'prepared' phase). The only safe action is
+        to discard it -- rolling back any unlinked, never-completed
+        transaction first if one exists -- and let the user restart the
+        restore from the archive. There is nothing to "continue" (no file
+        bytes are held in the pending record, only hashes) and nothing to
+        "roll back to" (nothing was ever applied).
+      - 'diagnostic': the state is genuinely inconsistent/corrupt and no
+        safe coordinator primitive exists for it. Only a diagnostic may be
+        shown; pending/rollback state must not be touched.
     """
     if not isinstance(inspection, dict) or 'action' not in inspection:
         raise SkinRecoveryDecisionError('recovery inspection result is invalid')
@@ -55,14 +62,7 @@ def describe_recovery_action(inspection):
             'continue_available': False,
             'rollback_available': True,
         }
-    if action in UNSAFE_ACTIONS:
-        return {
-            'kind': 'diagnostic',
-            'action': action,
-            'reason': (
-                'Arctic Fuse 3 restore recovery requires "{}", which has no '
-                'safe automatic recovery yet. No files or settings were '
-                'changed.'.format(action)),
-        }
+    if action in DISCARD_ACTIONS:
+        return {'kind': 'discard', 'action': action}
     raise SkinRecoveryDecisionError(
         'unrecognized AF3 recovery action: {}'.format(action))

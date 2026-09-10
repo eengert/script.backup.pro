@@ -102,15 +102,21 @@ from tests.test_skin_restore import fixture as skin_fixture  # noqa: E402
 
 
 class FakeRecoveryDialog:
-    """Records calls; ok()/notification() never block, select() is scripted."""
+    """Records calls; ok()/notification() never block, select()/yesno() are
+    scripted."""
 
-    def __init__(self, select_return=-1):
+    def __init__(self, select_return=-1, yesno_return=True):
         self.select_return = select_return
+        self.yesno_return = yesno_return
         self.calls = []
 
     def select(self, title, options):
         self.calls.append(('select', title, list(options)))
         return self.select_return
+
+    def yesno(self, title, message, **_kwargs):
+        self.calls.append(('yesno', title, message))
+        return self.yesno_return
 
     def ok(self, title, message):
         self.calls.append(('ok', title, message))
@@ -139,6 +145,8 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
                 backup_module.resume_skin_restore_staging,
             'finish_skin_restore': backup_module.finish_skin_restore,
             'rollback_skin_restore': backup_module.rollback_skin_restore,
+            'discard_prepared_skin_restore':
+                backup_module.discard_prepared_skin_restore,
             'BackupProgressBar': backup_module.BackupProgressBar,
             'Dialog': getattr(backup_module.xbmcgui, 'Dialog', None),
         }
@@ -165,10 +173,23 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
                 raise RuntimeError('Kodi refused to roll back AF3')
             self.current_action = {'action': 'none'}
 
+        def fake_discard(_profile, _rollback_root, _pending_path):
+            self.calls.append('discard')
+            if self.current_action.get('fail_discard'):
+                raise RuntimeError('cannot discard AF3 restore')
+            action = self.current_action.get('action')
+            self.current_action = {'action': 'none'}
+            return {
+                'action': action,
+                'transaction_recovered':
+                    action == 'recover_unlinked_transaction',
+            }
+
         backup_module.inspect_pending_restore = fake_inspect
         backup_module.resume_skin_restore_staging = fake_resume
         backup_module.finish_skin_restore = fake_finish
         backup_module.rollback_skin_restore = fake_rollback
+        backup_module.discard_prepared_skin_restore = fake_discard
         backup_module.BackupProgressBar = lambda *_a, **_k: type(
             'Progress', (), {
                 'create': lambda self, *_a, **_k: None,
@@ -200,16 +221,49 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
         self.assertFalse(instance.resolvePendingSkinRestore())
         self.assertEqual([], self.calls)
 
-    def test_unsafe_action_shows_diagnostic_and_leaves_state_untouched(self):
-        dialog = FakeRecoveryDialog()
+    def test_restart_preflight_confirmed_discards_with_no_transaction(self):
+        dialog = FakeRecoveryDialog(yesno_return=True)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'restart_preflight'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['discard'], self.calls)
+        self.assertEqual('none', self.current_action['action'])
+        self.assertTrue(any(call[0] == 'yesno' for call in dialog.calls))
+        self.assertTrue(any(call[0] == 'notification'
+                            for call in dialog.calls))
+
+    def test_recover_unlinked_transaction_confirmed_rolls_back_and_discards(
+            self):
+        dialog = FakeRecoveryDialog(yesno_return=True)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'recover_unlinked_transaction'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['discard'], self.calls)
+        self.assertEqual('none', self.current_action['action'])
+
+    def test_discard_declined_preserves_pending_state(self):
+        dialog = FakeRecoveryDialog(yesno_return=False)
         backup_module.xbmcgui.Dialog = lambda: dialog
         instance = self._instance()
         self.current_action = {'action': 'restart_preflight'}
         self.assertTrue(instance.resolvePendingSkinRestore())
         self.assertEqual([], self.calls)
-        self.assertEqual(1, len(dialog.calls))
-        self.assertEqual('ok', dialog.calls[0][0])
-        self.assertIn('restart_preflight', dialog.calls[0][2])
+        self.assertEqual('restart_preflight', self.current_action['action'])
+
+    def test_discard_failure_preserves_pending_state_and_reports_it(self):
+        dialog = FakeRecoveryDialog(yesno_return=True)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'restart_preflight',
+                               'fail_discard': True}
+        self.assertTrue(instance.resolvePendingSkinRestore())
+        self.assertEqual(['discard'], self.calls)
+        self.assertEqual('restart_preflight', self.current_action['action'])
+        self.assertTrue(any(
+            call[0] == 'ok' and 'Recovery data was preserved' in call[2]
+            for call in dialog.calls))
 
     def test_inconsistent_state_shows_diagnostic_and_leaves_state_untouched(
             self):

@@ -266,6 +266,44 @@ def _read_verified_forward_files(profile_path, pending):
     return checked
 
 
+def discard_prepared_skin_restore(profile_path, rollback_root, pending_path):
+    """Safely discard a 'prepared'-phase restore that never mutated a file.
+
+    Valid only for the two actions `inspect_pending_restore()` reports
+    before any AF3 file has been touched: 'restart_preflight' (no linked
+    or unlinked transaction exists at all) and
+    'recover_unlinked_transaction' (exactly one unresolved transaction
+    exists that predates this pending record ever being linked to a
+    transaction, per its still-'prepared' phase). In the second case the
+    unresolved transaction is rolled back to its own pre-transaction
+    snapshot first -- always safe, since that snapshot was captured
+    before any profile file changed -- then the prepared pending record
+    is cleared in both cases. Raises for every other action; callers must
+    not call this speculatively.
+    """
+    with _operation_lock(pending_path):
+        action = inspect_pending_restore(
+            profile_path, rollback_root, pending_path)
+        if action['action'] not in (
+                'restart_preflight', 'recover_unlinked_transaction'):
+            raise SkinCoordinatorError(
+                'pending skin restore is not a discardable prepared state')
+        pending = read_pending_state(pending_path)
+        transaction_recovered = False
+        if action['action'] == 'recover_unlinked_transaction':
+            recovered = recover_pending_transactions(
+                profile_path, rollback_root)
+            if not recovered:
+                raise SkinCoordinatorError(
+                    'unlinked skin transaction was not recovered')
+            transaction_recovered = True
+        clear_pending_state(pending_path, pending)
+        return {
+            'action': action['action'],
+            'transaction_recovered': transaction_recovered,
+        }
+
+
 def resume_skin_restore_staging(
         profile_path, rollback_root, pending_path, host):
     """Resume a committed AF3 transaction through the rebuild checkpoint."""

@@ -607,6 +607,68 @@ class SkinCoordinatorTests(unittest.TestCase):
             self.profile, self.rollback, pending['rollback'],
             pending['transaction_id']))
 
+    def test_discard_restart_preflight_clears_state_with_no_transaction(self):
+        with self.assertRaises(RuntimeError):
+            self.stage(FakeHost(fail='stop_playback'))
+        self.assertEqual('restart_preflight',
+                         skin_coordinator.inspect_pending_restore(
+                             self.profile, self.rollback,
+                             self.state)['action'])
+
+        result = skin_coordinator.discard_prepared_skin_restore(
+            self.profile, self.rollback, self.state)
+
+        self.assertEqual(
+            {'action': 'restart_preflight', 'transaction_recovered': False},
+            result)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+        self.assertEqual([], skin_transaction.pending_skin_transactions(
+            self.profile, self.rollback))
+
+    def test_discard_recovers_unlinked_transaction_then_clears_state(self):
+        real_write = skin_coordinator.write_pending_state
+
+        def fail_handoff(path, record):
+            if record['phase'] == 'transaction_prepared':
+                raise RuntimeError('state disk full')
+            return real_write(path, record)
+
+        with mock.patch.object(
+                skin_coordinator, 'write_pending_state',
+                side_effect=fail_handoff):
+            with self.assertRaises(skin_transaction.SkinTransactionError):
+                self.stage(FakeHost())
+        self.assertEqual('recover_unlinked_transaction',
+                         skin_coordinator.inspect_pending_restore(
+                             self.profile, self.rollback,
+                             self.state)['action'])
+
+        result = skin_coordinator.discard_prepared_skin_restore(
+            self.profile, self.rollback, self.state)
+
+        self.assertEqual({
+            'action': 'recover_unlinked_transaction',
+            'transaction_recovered': True,
+        }, result)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+        self.assertEqual([], skin_transaction.pending_skin_transactions(
+            self.profile, self.rollback))
+        self.assertFalse((self.profile / SETTINGS_PATH).exists())
+
+    def test_discard_rejects_a_staged_or_completed_restore(self):
+        pending = self.stage(FakeHost())
+        with self.assertRaisesRegex(
+                skin_coordinator.SkinCoordinatorError,
+                'not a discardable prepared state'):
+            skin_coordinator.discard_prepared_skin_restore(
+                self.profile, self.rollback, self.state)
+        self.assertEqual(pending, skin_state.read_pending_state(self.state))
+
+    def test_discard_rejects_when_nothing_is_pending(self):
+        with self.assertRaises(skin_coordinator.SkinCoordinatorError):
+            skin_coordinator.discard_prepared_skin_restore(
+                self.profile, self.rollback, self.state)
+
 
 if __name__ == '__main__':
     unittest.main()

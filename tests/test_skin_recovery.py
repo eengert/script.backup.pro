@@ -41,11 +41,11 @@ class SkinRecoveryTests(unittest.TestCase):
         self.assertFalse(result['continue_available'])
         self.assertTrue(result['rollback_available'])
 
-    def test_unsafe_actions_are_diagnostic_only(self):
+    def test_prepared_phase_actions_are_discardable(self):
         for action in ('restart_preflight', 'recover_unlinked_transaction'):
             result = describe_recovery_action({'action': action})
-            self.assertEqual('diagnostic', result['kind'])
-            self.assertIn(action, result['reason'])
+            self.assertEqual('discard', result['kind'])
+            self.assertEqual(action, result['action'])
 
     def test_unrecognized_action_raises(self):
         with self.assertRaises(SkinRecoveryDecisionError):
