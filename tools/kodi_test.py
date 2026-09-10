@@ -38,13 +38,27 @@ but only *after* first calling `Addons.SetAddonEnabled`, since a freshly
 `install()`-ed add-on is not enabled by default. Separately discovered:
 Backup Pro's declared `addon.xml` dependencies
 (`script.module.dateutil`, `script.module.future`,
-`script.module.dropbox`, `script.module.pyqrcode`) are not present in a
-disposable profile that only ran `install()` (which copies Backup Pro's
-own files only), so a triggered run currently fails on
-`ModuleNotFoundError` before doing any real work - a real, separate,
-not-yet-solved prerequisite for the next task, not a flaw in the
-trigger mechanism itself. See docs/MAC_KODI_VALIDATION.md → "Evidence
-and automation boundary" for the full picture.
+`script.module.dropbox`, `script.module.pyqrcode`) - and their own
+further transitive dependencies (`script.module.dropbox` alone needs
+`six`, `requests`, `certifi`, `chardet`, `idna`, `urllib3`) - are not
+present in a disposable profile that only ran `install()` (which
+copies Backup Pro's own files only); `install_dependencies()` resolves
+and copies the full transitive closure from the real profile to fix
+this.
+
+With dependencies resolved, a triggered `mode=backup` run (2026-09-10)
+got all the way to `XbmcBackup._createValidationFile()` before failing
+- proving the trigger mechanism works end-to-end, not just that Kodi's
+API accepted the call. The failure itself is a real Backup Pro
+production bug, not a harness or dependency issue:
+`resources/lib/archive.py::sha256_reader()` assumes `read_chunk()`
+returns `bytes` or `str` and calls `.encode('utf-8')` on anything else,
+but this Kodi 21.1 build's `xbmcvfs.File.read()` returns `bytearray`,
+which has no `.encode()` method - confirmed via the exact log line
+`Unable to create Backup Pro manifest: 'bytearray' object has no
+attribute 'encode'`. Not fixed here (production code, a separately
+scoped task). See docs/MAC_KODI_VALIDATION.md → "Evidence and
+automation boundary" for the full picture.
 """
 from __future__ import annotations
 

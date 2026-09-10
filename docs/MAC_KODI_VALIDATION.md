@@ -168,6 +168,8 @@ Kodi's JSON-RPC is proven instead, against a real launch on this Mac:
 ./tools/kodi-test init
 ./tools/kodi-test enable-webserver
 ./tools/kodi-test install <path-to-worktree>
+./tools/kodi-test install-dependencies                       # addon.xml's declared deps + their own transitive deps
+./tools/kodi-test configure script.backup.pro remote_path=<local-dest> remote_selection=0
 ./tools/kodi-test launch
 ./tools/kodi-test jsonrpc JSONRPC.Ping                       # -> "pong"
 ./tools/kodi-test enable-addon script.backup.pro              # a fresh install() is not enabled by default
@@ -187,18 +189,37 @@ non-disposable profile). The webserver coming up was confirmed via
 accepted by the API — via a real Python traceback in the log naming
 those exact files and line numbers.
 
-**A separate, real gap surfaced by that same proof**: the triggered run
-failed with `ModuleNotFoundError: No module named 'dropbox'` (and
-`dateutil`). Backup Pro's `addon.xml` declares four dependency add-ons
-(`script.module.dateutil`, `script.module.future`,
-`script.module.dropbox`, `script.module.pyqrcode`) that `./tools/kodi-test
-install` does not provide — it only copies Backup Pro's own files, by
-design (see its allowlist above). A disposable profile therefore needs
-those four dependencies installed too before a triggered run can do
-real work; that has not been attempted yet. Phase 9a steps 5+ (create
-and inspect an actual backup, drive restore/recovery) remain blocked on
-this specific, narrow, now-well-understood gap — not on the trigger
-mechanism, which is proven, and not on live-validation policy.
+**A dependency gap surfaced by that same proof, now solved**: the
+triggered run first failed with `ModuleNotFoundError: No module named
+'dropbox'` (and `dateutil`). Backup Pro's `addon.xml` declares four
+dependency add-ons (`script.module.dateutil`, `script.module.future`,
+`script.module.dropbox`, `script.module.pyqrcode`) that
+`./tools/kodi-test install` does not provide — it only copies Backup
+Pro's own files, by design (see its allowlist above). `./tools/kodi-test
+install-dependencies` fixes this: it copies each declared dependency
+from the real, normal Kodi profile's already-installed add-ons
+(read-only from the real profile), and resolves the full transitive
+closure — `script.module.dropbox` itself needs `six`, `requests`,
+`certifi`, `chardet`, `idna`, and `urllib3`, none of which Backup Pro's
+own `addon.xml` mentions. Proven against a real launch: all ten
+dependency add-ons copied and recognized.
+
+**A real Backup Pro bug surfaced once dependencies were resolved, not
+yet fixed**: with the full dependency graph installed, a triggered
+`mode=backup` run got all the way to
+`XbmcBackup._createValidationFile()` — proving the trigger mechanism
+works end-to-end, past every import, not just that Kodi's API accepted
+the call — before failing with `Unable to create Backup Pro manifest:
+'bytearray' object has no attribute 'encode'`. Root cause identified by
+reading the code: `resources/lib/archive.py::sha256_reader()` assumes
+`read_chunk()` returns `bytes` or `str` and calls `.encode('utf-8')` on
+anything else, but this Kodi 21.1 build's `xbmcvfs.File.read()` returns
+`bytearray`, which has no `.encode()` method. This is production code,
+not the harness — not fixed here; it needs its own scoped, tested fix.
+Phase 9a step 5 (create and inspect an actual backup's manifest/
+hashes/exclusions) and later steps remain blocked on this specific,
+now-precisely-understood bug — not on the trigger mechanism, which is
+fully proven, and not on live-validation policy.
 
 ## macOS and recovery assumptions
 
