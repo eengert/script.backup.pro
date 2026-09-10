@@ -104,6 +104,22 @@ class KodiHarnessTests(unittest.TestCase):
                           "script.module.dropbox", "script.module.pyqrcode"):
             self.assertIn(expected, MODULE._declared_dependencies())
 
+    def test_declared_dependencies_excludes_any_virtual_xbmc_namespace(self):
+        # regression guard: skin.arctic.fuse.3's own addon.xml declares
+        # xbmc.gui (not xbmc.python) as a virtual platform dependency -
+        # confirmed empirically 2026-09-10 - so the exclusion must cover
+        # the whole xbmc.* namespace, not just the one literal id.
+        with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+            source = Path(d)
+            (source / "addon.xml").write_text(
+                '<addon><requires>'
+                '<import addon="xbmc.gui" version="5.17.0"/>'
+                '<import addon="xbmc.python" version="3.0.0"/>'
+                '<import addon="script.module.example" version="1.0.0"/>'
+                '</requires></addon>')
+            self.assertEqual(
+                MODULE._declared_dependencies(source), ["script.module.example"])
+
     def test_install_dependencies_copies_from_the_real_profile_only(self):
         old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
                MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,

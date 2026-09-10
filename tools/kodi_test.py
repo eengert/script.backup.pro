@@ -236,12 +236,14 @@ def install(source: Path) -> None:
 
 def _declared_dependencies(source: Path = PROJECT) -> list[str]:
     """The real add-on ids source/addon.xml declares as <requires>,
-    excluding the virtual xbmc.python platform dependency (not a real
-    installable add-on)."""
+    excluding virtual xbmc.* platform dependencies (e.g. xbmc.python,
+    xbmc.gui - Kodi's own built-in interfaces, not real installable
+    add-ons; confirmed empirically 2026-09-10 against
+    skin.arctic.fuse.3's own addon.xml, which declares xbmc.gui)."""
     import xml.etree.ElementTree as ET
     tree = ET.parse(source / "addon.xml")
     return [el.get("addon") for el in tree.getroot().findall("./requires/import")
-            if el.get("addon") != "xbmc.python"]
+            if not el.get("addon", "").startswith("xbmc.")]
 
 
 def _copy_addon_closure(seed_ids: list[str]) -> list[str]:
