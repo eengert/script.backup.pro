@@ -539,6 +539,29 @@ class KodiHarnessTests(unittest.TestCase):
         finally:
             MODULE.jsonrpc = original
 
+    def test_enable_addons_enables_each_id(self):
+        # regression guard: skin.arctic.fuse.3 would not actually load
+        # even once present, because it (and every add-on it depends
+        # on) starts disabled just like any other freshly copied
+        # add-on - confirmed empirically 2026-09-10.
+        calls = []
+
+        def fake_enable_addon(addon_id, **kwargs):
+            calls.append((addon_id, kwargs))
+            return {"result": "OK"}
+
+        original = MODULE.enable_addon
+        MODULE.enable_addon = fake_enable_addon
+        try:
+            MODULE.enable_addons(
+                ["skin.arctic.fuse.3", "script.skinvariables"], port=1234)
+            self.assertEqual(calls, [
+                ("skin.arctic.fuse.3", {"port": 1234}),
+                ("script.skinvariables", {"port": 1234}),
+            ])
+        finally:
+            MODULE.enable_addon = original
+
     def test_install_allowlist_excludes_development_files(self):
         with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
             source = Path(d) / "addon"

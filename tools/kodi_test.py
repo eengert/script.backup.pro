@@ -411,6 +411,22 @@ def enable_addon(addon_id: str, **jsonrpc_kwargs) -> dict:
                     {"addonid": addon_id, "enabled": True}, **jsonrpc_kwargs)
 
 
+def enable_addons(addon_ids: list[str], **jsonrpc_kwargs) -> None:
+    """enable_addon() for each of addon_ids. A skin has the same
+    disabled-by-default problem as any other freshly copied add-on, and
+    additionally will not actually load while any of its own hard
+    dependencies are still disabled too - confirmed empirically
+    2026-09-10 activating skin.arctic.fuse.3, whose install_skin() copy
+    (and every add-on it depends on) starts disabled. Enabling them
+    live does not retroactively fix an already-failed boot-time skin
+    load; follow this with restart() for a clean load with everything
+    already enabled (confirmed empirically: a live
+    Settings.SetSettingValue afterward did not trigger a real skin
+    reload, but stopping and relaunching did)."""
+    for addon_id in addon_ids:
+        enable_addon(addon_id, **jsonrpc_kwargs)
+
+
 def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dict:
     """Invoke Addons.ExecuteAddon for addon_id via JSON-RPC - the
     documented way to trigger a Program add-on non-interactively,
@@ -444,6 +460,8 @@ def main(argv: list[str]) -> int:
                     help="JSON object, e.g. '{\"addonid\":\"script.backup.pro\"}'")
     p = sub.add_parser("enable-addon")
     p.add_argument("addon_id", nargs="?", default=ADDON_ID)
+    p = sub.add_parser("enable-addons")
+    p.add_argument("addon_ids", nargs="+")
     p = sub.add_parser("execute-addon")
     p.add_argument("addon_id", nargs="?", default=ADDON_ID)
     p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
@@ -473,6 +491,9 @@ def main(argv: list[str]) -> int:
             result = jsonrpc(args.method, args.params)
         elif args.command == "enable-addon":
             result = enable_addon(args.addon_id)
+        elif args.command == "enable-addons":
+            enable_addons(args.addon_ids)
+            result = {"enabled": args.addon_ids}
         else:
             result = execute_addon(args.addon_id, args.params or None)
         print(json.dumps(result, indent=2, sort_keys=True))
