@@ -221,7 +221,7 @@ was inspected directly — correct `addon_version`/`kodi_version`,
 correct directory exclusions, 11 files each with a `sha256` hash and
 `size`.
 
-## Phase 9a step 4 (AF3 state capture) — genuinely blocked, not yet solved
+## Phase 9a step 4 (AF3 state capture) — done (2026-09-10)
 
 Backup Pro's AF3 capture is gated on `xbmc.getSkinDir() == AF3_ID`
 (`resources/lib/backup.py`), so AF3 must actually be the *active* skin
@@ -232,44 +232,106 @@ transitive dependencies from the real profile, the same pattern
 {"lookandfeel.skin": AF3_ID})` (`enable-webserver --skin <id>`) sets it
 active before the first launch.
 
-Live-tested (2026-09-10): `install-skin` initially failed refusing
-`xbmc.gui` — AF3's own `addon.xml` declares that virtual platform
-dependency directly (Backup Pro's `addon.xml` only declared
-`xbmc.python`), so `_declared_dependencies()`'s exclusion was
-generalized to the whole `xbmc.*` namespace rather than one literal id
-(fixed, tested, committed). Retried: `install-skin` then refused
-`script.module.pil`, required transitively by two of AF3's own declared
-dependencies (`plugin.video.themoviedb.helper` and
-`script.texturemaker`) — **and this one is not present in the real,
-normal Kodi profile at all**, confirmed by direct inspection
-(`ls ~/Library/Application Support/Kodi/addons/script.module.pil` does
-not exist). Every other add-on in AF3's full transitive closure (11
-add-ons) *is* present in the real profile.
+Getting there took three rounds of live-testing and fixing real gaps,
+not one lucky attempt:
 
-To confirm this is the actual blocker rather than an artifact of the
-harness's dependency walk, copied AF3 manually (bypassing
-`install_skin()`) and launched: Kodi logged `Failed to load skin
-'skin.arctic.fuse.3'` and silently fell back to the bundled Estuary
-skin — Kodi's own add-on manager refuses to activate a skin with an
-unmet declared dependency; it does not merely warn. Real Kodi profile
-confirmed untouched (unchanged file mtimes); stopped and reset the
-disposable profile cleanly afterward.
+1. `install-skin` first refused `xbmc.gui` — AF3's own `addon.xml`
+   declares that virtual platform dependency directly (Backup Pro's
+   `addon.xml` only ever declared `xbmc.python`), so
+   `_declared_dependencies()`'s exclusion was generalized to the whole
+   `xbmc.*` namespace.
+2. Retried: `install-skin` then refused `script.module.pil`, required
+   transitively by two of AF3's own dependencies
+   (`plugin.video.themoviedb.helper`, `script.texturemaker`). Direct
+   inspection first suggested it was genuinely absent from the real
+   profile (`ls ~/Library/Application Support/Kodi/addons/script.module.pil`
+   found nothing there) — **that check was incomplete, not the actual
+   answer.** Once network-install was authorized (see below) and
+   investigated properly before attempting anything, `Addons.GetAddonDetails`
+   over JSON-RPC revealed the real picture: `script.module.pil` is
+   installed — bundled inside `Kodi.app` itself
+   (`/Applications/Kodi.app/Contents/Resources/Kodi/addons/script.module.pil/`),
+   visible to every profile automatically, the same way
+   `repository.xbmc.org` is. `_copy_addon_closure()` only ever checked
+   the real *profile's* `addons/` directory, never Kodi's own bundled
+   system add-ons, so it reported a false "missing" for anything
+   satisfied that way. Fixed: check `KODI_SYSTEM_ADDONS_DIR` first and
+   skip copying anything already there. **No network install was
+   actually needed** for this specific package.
+3. With that fixed, `install-skin` succeeded (17 add-ons total,
+   `script.module.pil` correctly skipped), but AF3 *still* failed to
+   load (`Failed to load skin 'skin.arctic.fuse.3'`, fallback to
+   Estuary). `Addons.GetAddonDetails` on AF3 itself and each of its
+   copied dependencies showed `"enabled": false` — every freshly copied
+   add-on starts disabled, the same problem already known from Backup
+   Pro, but this time affecting an entire skin's dependency chain at
+   once, and Kodi's boot-time skin loader refuses to activate a skin
+   with *any* disabled hard dependency. `enable_addons()` (batches
+   `enable_addon()`) fixed this — but a live `Settings.SetSettingValue`
+   skin switch afterward did *not* trigger a real reload; only
+   `restart()` (stop + launch) did.
 
-**This is a genuine, precisely-understood blocker, not a harness bug**:
-the "copy an already-installed add-on from the real profile" approach
-that solved every other dependency gap in this project cannot work
-here, because the real profile itself has never installed
-`script.module.pil`. The only way to complete Phase 9a step 4 (and the
-steps that build on it) is a *live network install* of
-`script.module.pil` from Kodi's official add-on repository — a
-materially different capability from anything this harness has done so
-far (every prior install/copy operation was local-file-only, read-only
-from the real profile, with zero network dependency). This has **not**
-been attempted or authorized — it introduces new considerations (which
-repository to trust, version pinning, install reliability, whether a
-disposable profile should reach the network at all) that deserve an
-explicit decision rather than being assumed. Until that's decided, step
-4 (and steps 6-9, which build on AF3 being active) remain blocked.
+**Fully proven end to end** (`./tools/kodi-test init` → `install-skin`
+→ `install .` → `install-dependencies` → `enable-webserver --skin
+skin.arctic.fuse.3` → `launch` → `enable-addon script.backup.pro` +
+`enable-addons <all 17 AF3-closure ids>` → `restart`): the log showed
+`load skin from: .../addons/skin.arctic.fuse.3/ (version: 3.2.19)`
+with no failure, and `Settings.GetSettingValue lookandfeel.skin`
+confirmed `skin.arctic.fuse.3` active. With `backup_skin_config=true`
+configured, a triggered backup produced a real `skin_config/` capture
+in the archive — inspected directly: `skin_id` `skin.arctic.fuse.3`,
+`skin_version` `3.2.19`, `helper_id` `script.skinvariables`,
+`helper_version` `2.2.2`, 184 real appearance/setting values, 4 helper
+files, a content fingerprint. This is Phase 9a step 4, objectively
+complete. Real Kodi profile confirmed untouched throughout (unchanged
+file mtimes across every launch in this investigation); stopped and
+reset the disposable profile cleanly.
+
+One harmless side effect observed and worth recording: once AF3 is
+genuinely active, its home-screen widgets (via
+`plugin.video.themoviedb.helper`) attempt outbound HTTP calls to
+third-party content APIs (mdblist.com, trakt.tv) on their own,
+independent of anything this harness does, and fail with `401` since
+no accounts are configured in the disposable profile — expected, not
+an error in this work, and unrelated to Backup Pro's AF3 capture
+(which reads local skin settings/files, not widget content).
+
+### Authorized network-install capability (recorded, not exercised)
+
+The human explicitly authorized a narrowly scoped network-install
+capability for this harness before the investigation above found it
+wasn't actually needed. Recording the exact authorization here (per
+explicit instruction) so either agent can apply the same rule to a
+genuine future need without re-asking:
+
+- **Scope**: the approved disposable Kodi test profile only. Never the
+  normal Kodi profile. Never Apple TV or any other device.
+- **Allowed source**: Kodi's own official repository/source as
+  configured by the disposable Kodi instance only. No third-party
+  repositories. No arbitrary ZIP/package downloads from the web. No
+  external credentials.
+- **Allowed package** (for this task): `script.module.pil` only, solely
+  to satisfy AF3's proven transitive dependency. Not a general-purpose
+  install capability — a later task must explicitly re-authorize
+  installing anything else.
+- **Required mechanism**: the smallest safe mechanism that requests
+  installation *through Kodi itself* (its own repository/add-on
+  installation path), not custom HTTP/package downloading. Must fail
+  closed if the source can't be verified as the official Kodi
+  repository.
+- **Required verification** before trusting a result: the package is
+  actually installed in the disposable profile; its source/repository
+  identity as far as Kodi exposes it; that the originally-blocked
+  activation (AF3) then succeeds; that the normal Kodi profile remains
+  untouched; that no unrelated add-ons were installed unexpectedly;
+  Kodi logs inspected for installation/activation errors.
+- **Not implemented**: since `script.module.pil` turned out to already
+  be present (Kodi-bundled, not network-installed), no install
+  mechanism was built or exercised. If a genuine future need for a
+  different package arises, build it fresh under these same
+  constraints rather than assuming this authorization has already been
+  spent on something else, and re-confirm the constraints still apply
+  before using it.
 
 ## macOS and recovery assumptions
 

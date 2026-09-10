@@ -66,9 +66,29 @@ gated on `xbmc.getSkinDir() == AF3_ID`, so AF3 must actually be the
 *active* skin, not merely present. `configure_webserver()`'s
 `extra_settings` lets a caller set `lookandfeel.skin` in the same
 pre-launch write as the webserver settings (it can only be called once
-per fresh profile). See docs/MAC_KODI_VALIDATION.md → "Evidence and
-automation boundary" for the full picture and what has/hasn't been
-proven for AF3 specifically.
+per fresh profile).
+
+AF3 activation itself needed two more fixes before it worked
+(2026-09-10, all confirmed against real launches, no network access
+used): (1) `_copy_addon_closure()` only ever checked the real profile's
+`addons/` directory, so it wrongly reported `script.module.pil` (needed
+transitively by two of AF3's own dependencies) as missing - it's
+actually bundled inside Kodi.app itself (`KODI_SYSTEM_ADDONS_DIR`),
+visible to every profile automatically; fixed to check there first and
+skip copying anything already available that way. (2) every freshly
+copied add-on - AF3 itself and its whole dependency closure, not just
+Backup Pro - starts disabled, and Kodi's boot-time skin loader silently
+falls back to Estuary if any of a skin's hard dependencies are
+disabled; `enable_addons()` batch-enables them, followed by `restart()`
+for a clean boot (a live `Settings.SetSettingValue` skin switch while
+already running does not trigger a real reload - confirmed empirically,
+only stop()+launch() does). With all of that, AF3 activates
+successfully and a triggered backup with `backup_skin_config=true`
+produces a real `skin_config/` capture with correct skin/helper
+id/version and real appearance settings - Phase 9a step 4 is proven
+done, no network install was actually needed. See
+docs/MAC_KODI_VALIDATION.md → "Evidence and automation boundary" for
+the full picture.
 """
 from __future__ import annotations
 
