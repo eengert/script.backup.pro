@@ -98,6 +98,97 @@ class KodiHarnessTests(unittest.TestCase):
             (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE) = old
 
+    def test_declared_dependencies_excludes_xbmc_python(self):
+        self.assertNotIn("xbmc.python", MODULE._declared_dependencies())
+        for expected in ("script.module.dateutil", "script.module.future",
+                          "script.module.dropbox", "script.module.pyqrcode"):
+            self.assertIn(expected, MODULE._declared_dependencies())
+
+    def test_install_dependencies_copies_from_the_real_profile_only(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+                fake_real_addons = d / "fake-real-profile" / "addons"
+                fake_dep_dir = fake_real_addons / "script.module.example"
+                fake_dep_dir.mkdir(parents=True)
+                (fake_dep_dir / "marker.py").write_text("# dependency\n")
+                MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile"
+
+                source = d / "addon-source"
+                source.mkdir()
+                (source / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="xbmc.python" version="3.0.0"/>'
+                    '<import addon="script.module.example" version="1.0.0"/>'
+                    '</requires></addon>')
+
+                installed = MODULE.install_dependencies(source)
+                self.assertEqual(installed, ["script.module.example"])
+                copied = MODULE.KODI_ADDONS_DIR / "script.module.example" / "marker.py"
+                self.assertTrue(copied.exists())
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
+
+    def test_install_dependencies_refuses_a_dependency_missing_from_the_real_profile(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+                MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile-empty"
+
+                source = d / "addon-source"
+                source.mkdir()
+                (source / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.missing" version="1.0.0"/>'
+                    '</requires></addon>')
+
+                with self.assertRaises(RuntimeError):
+                    MODULE.install_dependencies(source)
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
+
+    def test_install_dependencies_refuses_a_symlinked_source(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+                fake_real_addons = d / "fake-real-profile" / "addons"
+                fake_real_addons.mkdir(parents=True)
+                real_dep_dir = d / "actual-dep-location"
+                real_dep_dir.mkdir()
+                (fake_real_addons / "script.module.example").symlink_to(
+                    real_dep_dir, target_is_directory=True)
+                MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile"
+
+                source = d / "addon-source"
+                source.mkdir()
+                (source / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.example" version="1.0.0"/>'
+                    '</requires></addon>')
+
+                with self.assertRaises(RuntimeError):
+                    MODULE.install_dependencies(source)
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
+
     def test_configure_writes_only_the_given_settings(self):
         old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
                MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE)

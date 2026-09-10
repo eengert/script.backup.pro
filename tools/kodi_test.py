@@ -209,6 +209,40 @@ def install(source: Path) -> None:
             shutil.copy2(src, dst)
 
 
+def _declared_dependencies(source: Path = PROJECT) -> list[str]:
+    """The real add-on ids source/addon.xml declares as <requires>,
+    excluding the virtual xbmc.python platform dependency (not a real
+    installable add-on)."""
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(source / "addon.xml")
+    return [el.get("addon") for el in tree.getroot().findall("./requires/import")
+            if el.get("addon") != "xbmc.python"]
+
+
+def install_dependencies(source: Path = PROJECT) -> list[str]:
+    """Copy every add-on Backup Pro's addon.xml declares as a dependency
+    from the real, normal Kodi profile into the disposable profile -
+    read-only from the real profile, confined write to the disposable
+    profile only. install() only copies Backup Pro's own files; without
+    this, a triggered run fails with ModuleNotFoundError (confirmed
+    empirically 2026-09-10 - see docs/MAC_KODI_VALIDATION.md)."""
+    verify_isolation()
+    installed = []
+    for dependency_id in _declared_dependencies(source):
+        real_source = NORMAL_APPDATA_DIR / "addons" / dependency_id
+        if not real_source.is_dir():
+            raise RuntimeError(
+                f"dependency add-on not found in the real Kodi profile: {dependency_id}")
+        if real_source.is_symlink():
+            raise RuntimeError(f"symlink is not allowed: {real_source}")
+        destination = KODI_ADDONS_DIR / dependency_id
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(real_source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+        installed.append(dependency_id)
+    return installed
+
+
 def configure(addon_id: str, values: dict[str, str]) -> None:
     """Pre-seed disposable per-profile add-on settings before launch (a
     scripted, reversible edit confined to the disposable profile - not a
@@ -306,6 +340,8 @@ def main(argv: list[str]) -> int:
         sub.add_parser(name)
     p = sub.add_parser("install")
     p.add_argument("source", nargs="?", type=Path, default=PROJECT)
+    p = sub.add_parser("install-dependencies")
+    p.add_argument("source", nargs="?", type=Path, default=PROJECT)
     p = sub.add_parser("configure")
     p.add_argument("addon_id")
     p.add_argument("settings", nargs="+", help="key=value pairs")
@@ -329,6 +365,8 @@ def main(argv: list[str]) -> int:
         elif args.command == "stop": stop(); result = status()
         elif args.command == "restart": stop(); launch(); result = status()
         elif args.command == "install": install(args.source); result = status()
+        elif args.command == "install-dependencies":
+            result = {"installed": install_dependencies(args.source)}
         elif args.command == "configure":
             values = dict(item.split("=", 1) for item in args.settings)
             configure(args.addon_id, values)
