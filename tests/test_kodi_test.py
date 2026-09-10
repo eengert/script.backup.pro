@@ -562,6 +562,97 @@ class KodiHarnessTests(unittest.TestCase):
         finally:
             MODULE.enable_addon = original
 
+    def test_install_authorized_network_package_refuses_unauthorized_package(self):
+        with self.assertRaises(RuntimeError):
+            MODULE.install_authorized_network_package("script.module.something-else")
+
+    def test_install_authorized_network_package_refuses_unexpected_repo_before(self):
+        def fake_jsonrpc(method, params=None, **kwargs):
+            self.assertEqual(method, "Addons.GetAddons")
+            return {"result": {"addons": [
+                {"addonid": "repository.xbmc.org"},
+                {"addonid": "repository.some-third-party"},
+            ]}}
+
+        original = MODULE.jsonrpc
+        MODULE.jsonrpc = fake_jsonrpc
+        try:
+            with self.assertRaises(RuntimeError):
+                MODULE.install_authorized_network_package("script.module.pil")
+        finally:
+            MODULE.jsonrpc = original
+
+    def test_install_authorized_network_package_refuses_unexpected_repo_after(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE)
+        calls = {"n": 0}
+
+        def fake_jsonrpc(method, params=None, **kwargs):
+            if method == "Addons.GetAddons":
+                calls["n"] += 1
+                # clean before the install, a rogue repository after it
+                addons = [{"addonid": "repository.xbmc.org"}]
+                if calls["n"] > 1:
+                    addons.append({"addonid": "repository.rogue"})
+                return {"result": {"addons": addons}}
+            if method == "Addons.SetAddonEnabled":
+                return {"result": "OK"}
+            if method == "Addons.ExecuteAddon":
+                return {"result": "OK"}
+            raise AssertionError(f"unexpected method: {method}")
+
+        original = MODULE.jsonrpc
+        MODULE.jsonrpc = fake_jsonrpc
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                with self.assertRaises(RuntimeError):
+                    MODULE.install_authorized_network_package("script.module.pil")
+        finally:
+            MODULE.jsonrpc = original
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE) = old
+
+    def test_install_authorized_network_package_writes_installer_and_triggers_it(self):
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE)
+        captured = []
+
+        def fake_jsonrpc(method, params=None, **kwargs):
+            captured.append((method, params))
+            if method == "Addons.GetAddons":
+                return {"result": {"addons": [{"addonid": "repository.xbmc.org"}]}}
+            if method == "Addons.SetAddonEnabled":
+                return {"result": "OK"}
+            if method == "Addons.ExecuteAddon":
+                return {"result": "OK"}
+            raise AssertionError(f"unexpected method: {method}")
+
+        original = MODULE.jsonrpc
+        MODULE.jsonrpc = fake_jsonrpc
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                self._retarget(Path(d) / "root")
+                result = MODULE.install_authorized_network_package("script.module.pil")
+                self.assertEqual(result["result"], "OK")
+
+                installer_dir = MODULE.KODI_ADDONS_DIR / MODULE.INSTALLER_ADDON_ID
+                self.assertTrue((installer_dir / "addon.xml").exists())
+                default_py = (installer_dir / "default.py").read_text(encoding="utf-8")
+                self.assertIn("InstallAddon", default_py)
+
+                methods = [m for m, _p in captured]
+                self.assertEqual(methods.count("Addons.GetAddons"), 2)
+                self.assertIn("Addons.SetAddonEnabled", methods)
+                execute_calls = [p for m, p in captured if m == "Addons.ExecuteAddon"]
+                self.assertEqual(len(execute_calls), 1)
+                self.assertEqual(execute_calls[0]["addonid"], MODULE.INSTALLER_ADDON_ID)
+                self.assertEqual(execute_calls[0]["params"], ["addon=script.module.pil"])
+        finally:
+            MODULE.jsonrpc = original
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR, MODULE.KODI_LOG_FILE) = old
+
     def test_install_allowlist_excludes_development_files(self):
         with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
             source = Path(d) / "addon"

@@ -124,6 +124,13 @@ KODI = Path("/Applications/Kodi.app/Contents/MacOS/Kodi")
 KODI_SYSTEM_ADDONS_DIR = KODI.parent.parent / "Resources" / "Kodi" / "addons"
 ADDON_ID = "script.backup.pro"
 AF3_SKIN_ID = "skin.arctic.fuse.3"
+# Human-authorized, narrowly scoped network-install allowlist - see
+# docs/MAC_KODI_VALIDATION.md -> "Authorized network-install
+# capability". Do not add to this set without a new human decision
+# recorded the same way.
+AUTHORIZED_NETWORK_PACKAGES = frozenset({"script.module.pil"})
+OFFICIAL_REPOSITORY_ID = "repository.xbmc.org"
+INSTALLER_ADDON_ID = "script.kodi-test.installer"
 WEBSERVER_PORT = 8899
 WEBSERVER_USERNAME = "kodi-test"
 WEBSERVER_PASSWORD = "kodi-test-only"
@@ -457,6 +464,107 @@ def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dic
     return jsonrpc("Addons.ExecuteAddon", rpc_params, **jsonrpc_kwargs)
 
 
+def _repository_addon_ids(**jsonrpc_kwargs) -> list[str]:
+    """The ids of every add-on Kodi currently reports as an installed
+    repository (type xbmc.addon.repository) - used to fail closed
+    around install_authorized_network_package() if anything other than
+    the official Kodi repository is ever present. This harness never
+    copies a third-party repository into a disposable profile, so this
+    check is a cheap, structural way to verify "official source only"
+    given Kodi's JSON-RPC API exposes no direct install-provenance
+    property (confirmed empirically 2026-09-10 via a full, unfiltered
+    JSONRPC.Introspect - see docs/MAC_KODI_VALIDATION.md)."""
+    result = jsonrpc("Addons.GetAddons",
+                      {"type": "xbmc.addon.repository", "properties": ["enabled"]},
+                      **jsonrpc_kwargs)
+    if "error" in result:
+        raise RuntimeError(f"could not list repositories: {result['error']}")
+    return [a["addonid"] for a in result.get("result", {}).get("addons", []) or []]
+
+
+def _write_installer_addon() -> None:
+    """Write a minimal, throwaway, harness-owned script add-on into the
+    disposable profile whose only job is to call Kodi's own
+    InstallAddon() builtin for one caller-given add-on id via
+    xbmc.executebuiltin(). This is not Backup Pro production code and
+    downloads nothing itself - it exists only to reach InstallAddon(),
+    Kodi's own repository/add-on installation mechanism, through the
+    already-proven Addons.ExecuteAddon JSON-RPC path, since Kodi's
+    JSON-RPC API has no direct "install from repository" method
+    (confirmed empirically 2026-09-10: a full, unfiltered
+    JSONRPC.Introspect lists no such method anywhere in the API)."""
+    verify_isolation()
+    destination = KODI_ADDONS_DIR / INSTALLER_ADDON_ID
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    (destination / "addon.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<addon id="{INSTALLER_ADDON_ID}" name="kodi-test installer" '
+        'version="1.0.0" provider-name="kodi-test">\n'
+        '  <requires>\n'
+        '    <import addon="xbmc.python" version="3.0.0"/>\n'
+        '  </requires>\n'
+        '  <extension point="xbmc.python.script" library="default.py">\n'
+        '    <provides>executable</provides>\n'
+        '  </extension>\n'
+        '  <extension point="xbmc.addon.metadata">\n'
+        '    <summary lang="en_GB">Disposable test-harness helper - not for real use</summary>\n'
+        '  </extension>\n'
+        '</addon>\n',
+        encoding="utf-8")
+    (destination / "default.py").write_text(
+        "import sys\n"
+        "import xbmc\n"
+        "for arg in sys.argv[1:]:\n"
+        "    if arg.startswith('addon='):\n"
+        "        xbmc.executebuiltin('InstallAddon(%s)' % arg.split('=', 1)[1])\n",
+        encoding="utf-8")
+
+
+def install_authorized_network_package(addon_id: str, **jsonrpc_kwargs) -> dict:
+    """Install one specific, human-pre-authorized add-on from Kodi's
+    official repository, through Kodi's own InstallAddon() builtin (via
+    _write_installer_addon() + Addons.ExecuteAddon) - not custom
+    HTTP/ZIP downloading. Fails closed: refuses any add-on id not on
+    the explicit AUTHORIZED_NETWORK_PACKAGES allowlist, and refuses if
+    any repository other than OFFICIAL_REPOSITORY_ID is present/enabled
+    in the disposable profile, checked both before triggering the
+    install and after, before this function will report success. Only
+    triggers the install; does not itself wait for or verify
+    completion - Kodi installs asynchronously, so poll
+    Addons.GetAddonDetails separately for the actual result. See
+    docs/MAC_KODI_VALIDATION.md -> "Authorized
+    network-install capability" for the human-approved scope this
+    enforces."""
+    if addon_id not in AUTHORIZED_NETWORK_PACKAGES:
+        raise RuntimeError(
+            f"{addon_id} is not on the authorized network-install allowlist "
+            f"({sorted(AUTHORIZED_NETWORK_PACKAGES)}) - a new human decision "
+            "is required before installing anything else")
+    verify_isolation()
+    unexpected = [r for r in _repository_addon_ids(**jsonrpc_kwargs)
+                  if r != OFFICIAL_REPOSITORY_ID]
+    if unexpected:
+        raise RuntimeError(
+            "refusing to install: unexpected repository present before "
+            f"install: {unexpected}")
+    _write_installer_addon()
+    enabled = enable_addon(INSTALLER_ADDON_ID, **jsonrpc_kwargs)
+    if "error" in enabled:
+        raise RuntimeError(f"could not enable the installer add-on: {enabled['error']}")
+    result = execute_addon(INSTALLER_ADDON_ID, [f"addon={addon_id}"], **jsonrpc_kwargs)
+    if "error" in result:
+        raise RuntimeError(f"failed to trigger the install: {result['error']}")
+    unexpected = [r for r in _repository_addon_ids(**jsonrpc_kwargs)
+                  if r != OFFICIAL_REPOSITORY_ID]
+    if unexpected:
+        raise RuntimeError(
+            "refusing to trust the install: unexpected repository appeared "
+            f"after triggering it: {unexpected}")
+    return result
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -485,6 +593,8 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("execute-addon")
     p.add_argument("addon_id", nargs="?", default=ADDON_ID)
     p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
+    p = sub.add_parser("install-network-package")
+    p.add_argument("addon_id")
     args = parser.parse_args(argv)
     try:
         if args.command == "verify": result = verify_isolation()
@@ -514,6 +624,8 @@ def main(argv: list[str]) -> int:
         elif args.command == "enable-addons":
             enable_addons(args.addon_ids)
             result = {"enabled": args.addon_ids}
+        elif args.command == "install-network-package":
+            result = install_authorized_network_package(args.addon_id)
         else:
             result = execute_addon(args.addon_id, args.params or None)
         print(json.dumps(result, indent=2, sort_keys=True))
