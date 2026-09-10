@@ -116,6 +116,8 @@ class KodiHarnessTests(unittest.TestCase):
                 fake_dep_dir = fake_real_addons / "script.module.example"
                 fake_dep_dir.mkdir(parents=True)
                 (fake_dep_dir / "marker.py").write_text("# dependency\n")
+                (fake_dep_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
                 MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile"
 
                 source = d / "addon-source"
@@ -130,6 +132,51 @@ class KodiHarnessTests(unittest.TestCase):
                 self.assertEqual(installed, ["script.module.example"])
                 copied = MODULE.KODI_ADDONS_DIR / "script.module.example" / "marker.py"
                 self.assertTrue(copied.exists())
+        finally:
+            (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+             MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+             MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR) = old
+
+    def test_install_dependencies_resolves_transitive_dependencies(self):
+        # regression guard: script.module.dropbox itself needs
+        # script.module.requests, which Backup Pro's own addon.xml does
+        # not declare - confirmed empirically 2026-09-10.
+        old = (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
+               MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
+               MODULE.KODI_LOG_FILE, MODULE.NORMAL_APPDATA_DIR)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                d = Path(d)
+                self._retarget(d / "root")
+                fake_real_addons = d / "fake-real-profile" / "addons"
+
+                top_dir = fake_real_addons / "script.module.top"
+                top_dir.mkdir(parents=True)
+                (top_dir / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.transitive" version="1.0.0"/>'
+                    '</requires></addon>')
+
+                transitive_dir = fake_real_addons / "script.module.transitive"
+                transitive_dir.mkdir()
+                (transitive_dir / "marker.py").write_text("# transitive\n")
+                (transitive_dir / "addon.xml").write_text(
+                    '<addon><requires></requires></addon>')
+
+                MODULE.NORMAL_APPDATA_DIR = d / "fake-real-profile"
+
+                source = d / "addon-source"
+                source.mkdir()
+                (source / "addon.xml").write_text(
+                    '<addon><requires>'
+                    '<import addon="script.module.top" version="1.0.0"/>'
+                    '</requires></addon>')
+
+                installed = MODULE.install_dependencies(source)
+                self.assertEqual(
+                    set(installed), {"script.module.top", "script.module.transitive"})
+                self.assertTrue((MODULE.KODI_ADDONS_DIR / "script.module.transitive"
+                                  / "marker.py").exists())
         finally:
             (MODULE.ROOT, MODULE.HOME, MODULE.KODI_APPDATA_DIR,
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,

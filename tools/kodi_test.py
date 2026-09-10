@@ -220,15 +220,26 @@ def _declared_dependencies(source: Path = PROJECT) -> list[str]:
 
 
 def install_dependencies(source: Path = PROJECT) -> list[str]:
-    """Copy every add-on Backup Pro's addon.xml declares as a dependency
-    from the real, normal Kodi profile into the disposable profile -
-    read-only from the real profile, confined write to the disposable
-    profile only. install() only copies Backup Pro's own files; without
-    this, a triggered run fails with ModuleNotFoundError (confirmed
-    empirically 2026-09-10 - see docs/MAC_KODI_VALIDATION.md)."""
+    """Copy every add-on Backup Pro's addon.xml declares as a
+    dependency - and every dependency of those dependencies,
+    transitively - from the real, normal Kodi profile into the
+    disposable profile: read-only from the real profile, confined write
+    to the disposable profile only. install() only copies Backup Pro's
+    own files; without this, a triggered run fails with
+    ModuleNotFoundError, first on Backup Pro's own direct dependencies
+    and then, once those are present, on a transitive one
+    (script.module.dropbox needs script.module.requests, which is not
+    declared in Backup Pro's own addon.xml) - both confirmed empirically
+    2026-09-10, see docs/MAC_KODI_VALIDATION.md."""
     verify_isolation()
     installed = []
-    for dependency_id in _declared_dependencies(source):
+    seen: set[str] = set()
+    pending = list(_declared_dependencies(source))
+    while pending:
+        dependency_id = pending.pop(0)
+        if dependency_id in seen:
+            continue
+        seen.add(dependency_id)
         real_source = NORMAL_APPDATA_DIR / "addons" / dependency_id
         if not real_source.is_dir():
             raise RuntimeError(
@@ -240,6 +251,7 @@ def install_dependencies(source: Path = PROJECT) -> list[str]:
             shutil.rmtree(destination)
         shutil.copytree(real_source, destination, ignore=shutil.ignore_patterns("__pycache__"))
         installed.append(dependency_id)
+        pending.extend(_declared_dependencies(real_source))
     return installed
 
 
