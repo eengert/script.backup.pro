@@ -769,3 +769,19 @@ msgstr ""
 msgctxt "#30191"
 msgid "If a restore is interrupted, let Backup Pro's recovery continue or roll it back - do not edit skin files by hand"
 msgstr ""
+
+msgctxt "#30192"
+msgid "Backup failed - no valid restore point was created"
+msgstr ""
+
+msgctxt "#30193"
+msgid "file(s) failed to copy"
+msgstr ""
+
+msgctxt "#30194"
+msgid "more not shown - see kodi.log for the full list"
+msgstr ""
+
+msgctxt "#30195"
+msgid "This backup is valid and can be restored"
+msgstr ""

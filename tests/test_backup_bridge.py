@@ -703,6 +703,122 @@ class BackupBridgeTests(unittest.TestCase):
         with self.assertRaises(ArchiveValidationError):
             instance._verifyFolderBackup('/backup')
 
+    def test_copy_failures_are_all_recorded_not_just_the_first(self):
+        # regression guard, 2026-09-11: a real-world backup (a large,
+        # diverse addon_data/addons tree) hit a copy failure Backup Pro
+        # reported only as a vague transient "not all files were
+        # copied" notification -- with no indication of which file, or
+        # how many. The prior code also only ever logged the *first*
+        # failure in a group (`if not wroteFile and result`), so even
+        # the log gave no visibility into a multi-file failure. Every
+        # failed file must be recorded so the failure dialog (see
+        # _backupFailureMessage()) can say exactly what went wrong.
+        instance = object.__new__(XbmcBackup)
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, _percent, _message=None: None,
+        })()
+        instance.transferSize = 100
+        instance.transferLeft = 100
+
+        class Dest:
+            root_path = '/backup/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+            def put(self, source_file, _dest_file):
+                # simulate a source file that vanished or became
+                # unreadable between listing and copy time -- the most
+                # plausible real-world cause on a large, actively-used
+                # profile (a background service touching its own cache).
+                return 'bad' not in source_file
+
+        class Source:
+            root_path = '/profile/'
+
+        files = [
+            {'file': '/profile/good1.txt', 'size': 1, 'is_dir': False},
+            {'file': '/profile/bad1.txt', 'size': 1, 'is_dir': False},
+            {'file': '/profile/good2.txt', 'size': 1, 'is_dir': False},
+            {'file': '/profile/bad2.txt', 'size': 1, 'is_dir': False},
+        ]
+
+        result = instance._copyFiles(files, Source(), Dest())
+
+        self.assertFalse(result)
+        self.assertEqual(
+            ['/profile/bad1.txt', '/profile/bad2.txt'],
+            instance._copy_failures)
+
+    def test_backup_failure_message_reports_reason_and_failed_files(self):
+        instance = object.__new__(XbmcBackup)
+        instance._failure_reason = 'backup verification failed: checksum mismatch'
+        instance._copy_failures = [
+            '/profile/addon_data/one.db',
+            '/profile/addon_data/two.db',
+        ]
+        message = instance._backupFailureMessage()
+        self.assertIn('30192', message)  # "Backup failed" header
+        self.assertIn('checksum mismatch', message)
+        self.assertIn('/profile/addon_data/one.db', message)
+        self.assertIn('/profile/addon_data/two.db', message)
+        self.assertIn('30193', message)  # "file(s) failed to copy"
+
+    def test_backup_failure_message_truncates_a_long_failure_list(self):
+        instance = object.__new__(XbmcBackup)
+        instance._failure_reason = None
+        instance._copy_failures = ['/profile/file%d.txt' % i for i in range(12)]
+        message = instance._backupFailureMessage()
+        for path in instance._copy_failures[:5]:
+            self.assertIn(path, message)
+        for path in instance._copy_failures[5:]:
+            self.assertNotIn(path, message)
+        self.assertIn('7', message)  # 12 - 5 = 7 more, not shown
+        self.assertIn('30194', message)  # "more not shown..."
+
+    def test_failed_backup_leaves_no_artifact_and_shows_persistent_dialog(self):
+        # a failed backup must never be discoverable as a restore point
+        # (per Task A: "failed/incomplete backups are not added to
+        # backup history and are not exposed as restore points"), and
+        # must be reported with a dialog the user actively dismisses,
+        # not a transient notification that could be missed or mistaken
+        # for a partial-success warning.
+        class Remote:
+            def __init__(self):
+                self.removed = []
+
+            def rmdir(self, path):
+                self.removed.append(path)
+                return True
+
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = Remote()
+        instance._copy_failures = ['/profile/addon_data/cache.db']
+        instance._failure_reason = None
+        dialogs = []
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, title, message: dialogs.append(
+                (title, message)) or True})()
+        try:
+            result = instance._finalizeBackup(
+                False, '/backup/', compressed=False)
+        finally:
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+
+        self.assertFalse(result)
+        self.assertEqual(['/backup/'], instance.remote_vfs.removed)
+        self.assertEqual(1, len(dialogs))
+        self.assertIn('/profile/addon_data/cache.db', dialogs[0][1])
+        self.assertIn('30192', dialogs[0][1])
+
     def test_compressed_readback_requires_exact_remote_copy(self):
         instance = object.__new__(XbmcBackup)
         instance.remote_vfs = object()
@@ -735,8 +851,9 @@ class BackupBridgeTests(unittest.TestCase):
         instance.remote_vfs = Remote()
         rotations = []
         instance._rotateBackups = lambda: rotations.append(True)
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = lambda _message: None
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, _title, _message: True})()
         try:
             self.assertFalse(instance._finalizeBackup(
                 False, '/backup/', compressed=False))
@@ -762,7 +879,10 @@ class BackupBridgeTests(unittest.TestCase):
                 [('directory', '/backup/'), ('file', '/backup.zip')],
                 instance.remote_vfs.removed)
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
     def test_finalize_backup_notifies_a_clear_completion_summary(self):
         class Remote:
@@ -786,17 +906,25 @@ class BackupBridgeTests(unittest.TestCase):
             ],
         }
         instance._skin_snapshot_metadata = {'appearance': {}}
-        notifications = []
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = notifications.append
+        dialogs = []
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, title, message: dialogs.append(
+                (title, message)) or True})()
         try:
             self.assertTrue(instance._finalizeBackup(
                 True, '/backup/', compressed=False))
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
-        self.assertEqual(1, len(notifications))
-        message = notifications[0]
+        # a persistent dialog the user must dismiss, not a transient
+        # notification that can be missed -- consistent with the recent
+        # restore-success treatment.
+        self.assertEqual(1, len(dialogs))
+        message = dialogs[0][1]
         self.assertIn('42', message)
         self.assertIn('3', message)
         # the FakeAddon stub's getLocalizedString() returns the numeric
@@ -805,6 +933,7 @@ class BackupBridgeTests(unittest.TestCase):
         # resolve to rather than their real-world English copy.
         self.assertIn('30171', message)  # TMDb Helper cache excluded
         self.assertIn('30172', message)  # AF3 configuration included
+        self.assertIn('30195', message)  # explicitly valid/usable
 
     def test_finalize_backup_summary_omits_optional_parts_when_absent(self):
         class Remote:
@@ -819,16 +948,21 @@ class BackupBridgeTests(unittest.TestCase):
         instance._rotateBackups = lambda: True
         instance.backup_plan = {'file_count': 5, 'total_kib': 10}
         instance._skin_snapshot_metadata = None
-        notifications = []
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = notifications.append
+        dialogs = []
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, title, message: dialogs.append(
+                (title, message)) or True})()
         try:
             self.assertTrue(instance._finalizeBackup(
                 True, '/backup/', compressed=False))
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
-        message = notifications[0]
+        message = dialogs[0][1]
         self.assertNotIn('30171', message)
         self.assertNotIn('30172', message)
         self.assertNotIn('30170', message)
@@ -853,14 +987,18 @@ class BackupBridgeTests(unittest.TestCase):
 
         instance._runBackup = fail
         instance._closeVFS = close
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = lambda _message: None
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, _title, _message: True})()
         try:
             self.assertFalse(instance.backup())
             self.assertEqual([True], closed)
             self.assertEqual(['/fresh-backup/'], removed)
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
     def test_restore_wrapper_always_closes_after_failure(self):
         instance = object.__new__(XbmcBackup)

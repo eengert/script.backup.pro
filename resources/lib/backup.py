@@ -108,6 +108,8 @@ class XbmcBackup:
         self._skin_snapshot_metadata = None
         self._skin_managed_exclusions = []
         self._skin_monitor = xbmc.Monitor()
+        self._copy_failures = []
+        self._failure_reason = None
 
         self.configureRemote()
         utils.log(utils.getString(30046))
@@ -174,7 +176,7 @@ class XbmcBackup:
         except Exception as error:
             utils.log('Backup failed: %s' % error, xbmc.LOGWARNING)
             self._discardActiveArtifact()
-            utils.showNotification(utils.getString(30092))
+            self._reportBackupFailure(str(error))
             return False
         finally:
             self._cleanupSkinStage()
@@ -182,6 +184,8 @@ class XbmcBackup:
                 self._closeVFS()
 
     def _runBackup(self, progressOverride=False):
+        self._copy_failures = []
+        self._failure_reason = None
         shouldContinue = self._setupVFS(self.Backup, progressOverride)
 
         if(shouldContinue):
@@ -192,13 +196,17 @@ class XbmcBackup:
                 if self.remote_vfs.exists(self.remote_vfs.root_path):
                     utils.log('Backup target already exists: ' +
                               self.remote_vfs.root_path, xbmc.LOGWARNING)
-                    utils.showNotification(utils.getString(30092))
+                    self._reportBackupFailure(
+                        'the backup destination already exists: '
+                        + self.remote_vfs.root_path)
                     self._closeVFS()
                     return False
                 if not self.remote_vfs.mkdir(self.remote_vfs.root_path):
                     utils.log('Unable to create backup target: ' +
                               self.remote_vfs.root_path, xbmc.LOGWARNING)
-                    utils.showNotification(utils.getString(30092))
+                    self._reportBackupFailure(
+                        'could not create the backup destination: '
+                        + self.remote_vfs.root_path)
                     self._closeVFS()
                     return False
                 self._active_artifact = self.remote_vfs.root_path
@@ -214,10 +222,12 @@ class XbmcBackup:
                 utils.log('Unable to create Backup Pro manifest: %s' % error,
                           xbmc.LOGWARNING)
                 writeCheck = False
+                self._failure_reason = (
+                    'could not create the backup manifest: %s' % error)
 
             if(not writeCheck):
                 if isinstance(self.remote_vfs, ZipFileSystem):
-                    utils.showNotification(utils.getString(30092))
+                    self._reportBackupFailure()
                 else:
                     self._finalizeBackup(
                         False, self.remote_vfs.root_path, compressed=False)
@@ -263,6 +273,8 @@ class XbmcBackup:
                         utils.log('Local ZIP verification failed: %s' % error,
                                   xbmc.LOGWARNING)
                         backup_success = False
+                        self._failure_reason = (
+                            'local archive verification failed: %s' % error)
                     fileManager.addFile(zip_name)
 
                 # set root to data dir home and reset remote
@@ -295,6 +307,9 @@ class XbmcBackup:
                         utils.log('Uploaded ZIP verification failed: %s' % error,
                                   xbmc.LOGWARNING)
                         backup_success = False
+                        self._failure_reason = (
+                            'uploaded archive verification failed: %s'
+                            % error)
 
                 # delete the temp zip file
                 if renamed:
@@ -306,6 +321,8 @@ class XbmcBackup:
                     utils.log('Folder backup verification failed: %s' % error,
                               xbmc.LOGWARNING)
                     backup_success = False
+                    self._failure_reason = (
+                        'backup verification failed: %s' % error)
 
             backup_success = self._finalizeBackup(
                 backup_success, remote_artifact, compressing)
@@ -977,9 +994,15 @@ class XbmcBackup:
                     # copy the file
                     wroteFile = self._copyFile(source, dest, aFile['file'], dest.root_path + aFile['file'][len(source.root_path):])
 
-                    # if result is still true but this file failed
-                    if(not wroteFile and result):
+                    # record every failure, not just the first, so a
+                    # failed backup can report exactly what went wrong
+                    if(not wroteFile):
                         utils.log("Failed to write " + aFile['file'])
+                        failures = getattr(self, '_copy_failures', None)
+                        if failures is None:
+                            failures = []
+                            self._copy_failures = failures
+                        failures.append(aFile['file'])
                         result = False
 
         return result
@@ -1239,9 +1262,11 @@ class XbmcBackup:
         if success:
             self._active_artifact = None
             if self._rotateBackups() is False:
-                utils.showNotification(utils.getString(30092))
+                self._reportBackupFailure(
+                    'an old backup could not be removed during retention')
                 return False
-            utils.showNotification(self._backupCompletionMessage())
+            xbmcgui.Dialog().ok(
+                utils.getString(30010), self._backupCompletionMessage())
             return True
         if artifact_path:
             if compressed:
@@ -1249,8 +1274,34 @@ class XbmcBackup:
             else:
                 self.remote_vfs.rmdir(artifact_path)
         self._active_artifact = None
-        utils.showNotification(utils.getString(30092))
+        self._reportBackupFailure()
         return False
+
+    def _reportBackupFailure(self, reason=None):
+        """Show a persistent, actively-dismissed failure dialog instead
+        of a transient notification, so a failed backup can never be
+        mistaken for a partial success that was still saved. `reason`
+        overrides any reason already recorded (e.g. from an exception
+        caught higher up); per-file copy failures collected during this
+        run (see _copyFiles()) are always included regardless."""
+        if reason:
+            self._failure_reason = reason
+        xbmcgui.Dialog().ok(utils.getString(30010), self._backupFailureMessage())
+
+    def _backupFailureMessage(self):
+        parts = [utils.getString(30192)]
+        reason = getattr(self, '_failure_reason', None)
+        if reason:
+            parts.append(str(reason))
+        failures = getattr(self, '_copy_failures', None) or []
+        if failures:
+            parts.append('%d %s:' % (len(failures), utils.getString(30193)))
+            for path in failures[:5]:
+                parts.append(' - ' + path)
+            remaining = len(failures) - 5
+            if remaining > 0:
+                parts.append('%d %s' % (remaining, utils.getString(30194)))
+        return '\n'.join(parts)
 
     def _backupCompletionMessage(self):
         """Clear included/excluded counts, sizes, cache-regeneration
@@ -1260,7 +1311,7 @@ class XbmcBackup:
         """
         description = describe_backup_plan(
             getattr(self, 'backup_plan', None) or {})
-        parts = [utils.getString(30168)]
+        parts = [utils.getString(30168), utils.getString(30195)]
         parts.append('%d %s (%s)' % (
             description['included_files'], utils.getString(30169),
             utils.diskString(description['included_kib'] * 1024)))
@@ -1272,7 +1323,7 @@ class XbmcBackup:
             parts.append(utils.getString(30171))
         if getattr(self, '_skin_snapshot_metadata', None) is not None:
             parts.append(utils.getString(30172))
-        return ' | '.join(parts)
+        return '\n'.join(parts)
 
     def _discardActiveArtifact(self):
         artifact = getattr(self, '_active_artifact', None)
