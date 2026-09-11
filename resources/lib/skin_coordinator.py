@@ -249,13 +249,29 @@ def _verify_helper_sources(profile_path, expected, wait=None):
     content). A fixed retry count tuned against one measured delay kept
     proving insufficient against a longer one (5s, then 15s, both still
     failed live) - the delay itself isn't a fixed, knowable duration to
-    tune a number against. Poll until two consecutive reads agree with
-    each other (the files have genuinely stopped changing - a single
-    stable snapshot), then judge that stable snapshot once against
-    `expected`; still bounded so a file that never stops changing fails
-    closed rather than looping forever, and still fails if the
-    eventually-stable content is simply wrong."""
-    attempts = 60 if wait else 1
+    tune a number against, so this polls until two consecutive reads
+    agree with each other (the files have genuinely stopped changing - a
+    single stable snapshot) rather than assuming any fixed count means
+    "done". That alone wasn't the whole story: live instrumentation on
+    2026-09-11 caught a *second*, later wave of these same writes -
+    rebuild_skin()'s own ReloadSkin() call (after its own completion
+    signal fires) makes AF3 re-initialize every window, and AF3's own
+    onload hooks re-invoke Skin Variables per window as they load,
+    entirely outside rebuild_skin()'s completion signal and with no
+    "done" signal of its own. A direct trace of that run showed Skin
+    Variables invocations still firing ~2s after a 15s stability bound
+    had already given up, and the files matched `expected` exactly a
+    moment later with no further action taken - the same settling
+    pattern, just from a second, uninstrumented source. There is no
+    completion signal available for that second wave (it lives inside
+    third-party skin/add-on XML this project doesn't control), so the
+    bound below is sized with a wide margin over that observed ~8s
+    two-wave settling time rather than tuned to the minimum that once
+    happened to work; it still fails closed - a file that never stops
+    changing, or a stable value that's simply wrong, still fails - so
+    this bounds against a genuine hang without pretending to know a
+    precise duration for either wave."""
+    attempts = 400 if wait else 1
     previous = None
     actual = None
     for attempt in range(attempts):
