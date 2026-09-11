@@ -647,7 +647,10 @@ class XbmcBackup:
                 'Contains: {setting_count} settings, '
                 '{appearance_count} appearance values and '
                 '{helper_file_count} helper files\n\n'
-                'Current AF3 files will be saved locally for recovery.'
+                'Current AF3 files will be saved locally for recovery.\n\n'
+                'Kodi will briefly switch to its default skin, restore '
+                'the backed-up skin configuration, then reactivate the '
+                'backed-up skin.'
             ).format(**preview)
             if not xbmcgui.Dialog().yesno(
                     'Restore Arctic Fuse 3 configuration', label):
@@ -668,9 +671,9 @@ class XbmcBackup:
                 rollback_root, pending_path, host)
             if xbmcgui.Dialog().ok(
                     utils.getString(30010),
-                    'AF3 files are staged safely. Kodi will activate Arctic '
-                    'Fuse 3. Choose Yes when Kodi asks to keep the skin; '
-                    'verification will continue afterward.') is False:
+                    'AF3 files are staged safely. Kodi will activate '
+                    'Arctic Fuse 3; verification will continue '
+                    'afterward.') is False:
                 return False
             # AF3's rebuild mechanism activates windows through Kodi's
             # skin-variables add-on; a modal progress dialog left open
@@ -678,7 +681,7 @@ class XbmcBackup:
             self.progressBar.close()
             summary = finish_skin_restore(
                 profile, rollback_root, pending_path, host)
-            xbmcgui.Dialog().notification(
+            xbmcgui.Dialog().ok(
                 utils.getString(30010),
                 'Restored and verified {} settings and {} helper files.'
                 .format(summary['setting_count'],

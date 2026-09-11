@@ -931,8 +931,31 @@ class BackupBridgeTests(unittest.TestCase):
                 self.assertTrue(instance._restoreSkinConfig(manifest))
                 self.assertFalse(os.path.exists(os.path.join(
                     data, 'pending-skin-restore.json')))
-                self.assertTrue(any(item[0] == 'notification'
-                                    for item in messages))
+                # The final result must be a persistent dialog the user
+                # has to dismiss, not a transient toast that can be
+                # missed -- confirm the toast path was actually
+                # replaced, not just supplemented.
+                self.assertTrue(any(
+                    item[0] == 'ok' and 'Restored and verified' in item[2]
+                    for item in messages))
+                self.assertFalse(any(
+                    item[0] == 'notification'
+                    and 'Restored and verified' in item[2]
+                    for item in messages))
+                # The pre-restore confirmation must explain the
+                # temporary default-skin switch, since this whole
+                # method only runs for skin_config restores.
+                self.assertTrue(any(
+                    item[0] == 'yesno'
+                    and 'briefly switch to its default skin' in item[2]
+                    for item in messages))
+                # _confirmSkinChange() already answers Kodi's native
+                # skin-change dialog automatically -- the user is never
+                # actually asked, so this staged-files dialog must not
+                # tell them to answer it themselves.
+                self.assertFalse(any(
+                    item[0] == 'ok' and 'Choose Yes' in item[2]
+                    for item in messages))
                 # The progress dialog must close before finish_skin_
                 # restore() activates AF3 (only it, not staging, calls
                 # activate_skin) -- a modal dialog left open blocks the
