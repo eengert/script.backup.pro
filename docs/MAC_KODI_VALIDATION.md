@@ -132,6 +132,16 @@ user `kodi-test`) — objectively verified before it reports success
 false "ready"). Add `--destination <path>` to use a specific local
 backup destination; defaults to `<disposable-root>/backup-dest`.
 
+**Restore fix (2026-09-10, needs re-validation)**: a real bug in
+`_switchSkin()` — Backup Pro only *waited* for Kodi's native "keep this
+skin?" dialog during restore instead of answering it, so a human losing
+that race left the transaction genuinely incomplete (not stale
+bookkeeping) — is fixed (commit `d44ac84`), but could not be
+live-reproduced against the actual dialog in the disposable profile.
+**Please re-run your exact validation flow** (backup → change AF3
+appearance → restore) once more to confirm the dialog is now handled
+automatically with no race.
+
 **Visual/appearance confirmation checklist** (the one remaining
 genuinely subjective Phase 9 item):
 
@@ -141,7 +151,9 @@ genuinely subjective Phase 9 item):
    just that settings/hashes match) — layout, widgets, and appearance
    render as expected.
 3. If validating a restore: trigger it from the UI, accept the prompts
-   as intended, and confirm the skin looks right afterward too.
+   as intended, and confirm the skin looks right afterward too — Backup
+   Pro should now switch to Estuary and back to AF3 on its own, with no
+   dialog for you to race against.
 
 Any unexpected condition where safe recovery is uncertain, or anything
 that would require Apple TV/another real device, is still out of scope
