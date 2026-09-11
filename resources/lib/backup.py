@@ -529,18 +529,27 @@ class XbmcBackup:
         (reported 2026-09-10: it appeared and reverted before the user
         got a usable chance to click Yes). Backup Pro itself requested
         this exact skin change as part of a restore it is already
-        performing, so the answer is never actually in doubt - confirm
-        it immediately with Kodi's own input builtins (no JSON-RPC or
-        webserver needed; this runs in-process like any other Program
-        add-on action). Reads the currently focused control's label
-        first rather than assuming a fixed navigation direction, since
-        this dialog's default focus was never directly observed for
-        certain in every case - only move if it isn't already on Yes.
+        performing, so the answer is never actually in doubt.
+
+        An earlier version of this method navigated focus with
+        Action(Up) before selecting - that assumed a specific button
+        layout proven only for AF3's own custom yesno dialog. Live
+        testing 2026-09-10 found the flaw directly: this dialog renders
+        using whichever skin is *currently* active at the moment it
+        appears, which for the ensure_inactive() (AF3 -> Estuary) leg
+        is Estuary, not AF3 - a completely different button layout, so
+        Action(Up) did nothing there and the dialog was left on its
+        default "No" (confirmed via System.CurrentControl staying "No"
+        across the whole dialog lifetime, then reverting exactly like a
+        declined change). SendClick(11) is the deterministic,
+        skin-agnostic fix: 11 is Kodi's own standard "Yes" control id
+        for this dialog window, which every skin's yesno template binds
+        its visual Yes button to (confirmed against AF3's own
+        Dialog_DialogConfirm.xml: its custom Yes button's <onclick> is
+        itself SendClick(11)) - clicking it directly needs no knowledge
+        of the active skin's focus/navigation topology at all.
         """
-        if xbmc.getInfoLabel('System.CurrentControl') != 'Yes':
-            xbmc.executebuiltin('Action(Up)')
-            xbmc.sleep(100)
-        xbmc.executebuiltin('Action(Select)')
+        xbmc.executebuiltin('SendClick(11)')
 
     def _switchSkin(self, skin):
         if xbmc.getSkinDir() == skin:

@@ -889,34 +889,26 @@ class SkinSwitchConfirmationTests(unittest.TestCase):
         })()
         return instance
 
-    def test_confirm_skin_change_navigates_up_when_not_already_on_yes(self):
+    def test_confirm_skin_change_sends_deterministic_yes_click(self):
+        # regression guard: an earlier version navigated focus with
+        # Action(Up) before selecting, assuming a button layout proven
+        # only for AF3's own custom yesno dialog. Live testing found
+        # this dialog renders using whichever skin is *currently*
+        # active when it appears - Estuary during the temporary
+        # ensure_inactive() switch, a completely different layout where
+        # Action(Up) did nothing and the dialog was left on "No".
+        # SendClick(11) is Kodi's own standard "Yes" control id for
+        # this dialog, which every skin's yesno template (including
+        # AF3's own) binds its visual Yes button to - no navigation or
+        # skin-topology assumption needed at all.
         calls = []
-        original_label = backup_module.xbmc.getInfoLabel
         original_builtin = backup_module.xbmc.executebuiltin
-        original_sleep = backup_module.xbmc.sleep
-        backup_module.xbmc.getInfoLabel = lambda _name: 'No'
-        backup_module.xbmc.executebuiltin = lambda cmd: calls.append(cmd)
-        backup_module.xbmc.sleep = lambda _ms: None
-        try:
-            XbmcBackup._confirmSkinChange()
-        finally:
-            backup_module.xbmc.getInfoLabel = original_label
-            backup_module.xbmc.executebuiltin = original_builtin
-            backup_module.xbmc.sleep = original_sleep
-        self.assertEqual(calls, ['Action(Up)', 'Action(Select)'])
-
-    def test_confirm_skin_change_only_selects_when_already_on_yes(self):
-        calls = []
-        original_label = backup_module.xbmc.getInfoLabel
-        original_builtin = backup_module.xbmc.executebuiltin
-        backup_module.xbmc.getInfoLabel = lambda _name: 'Yes'
         backup_module.xbmc.executebuiltin = lambda cmd: calls.append(cmd)
         try:
             XbmcBackup._confirmSkinChange()
         finally:
-            backup_module.xbmc.getInfoLabel = original_label
             backup_module.xbmc.executebuiltin = original_builtin
-        self.assertEqual(calls, ['Action(Select)'])
+        self.assertEqual(calls, ['SendClick(11)'])
 
     def test_switch_skin_confirms_the_dialog_exactly_once(self):
         instance = self._instance()
