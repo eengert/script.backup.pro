@@ -106,15 +106,15 @@ msgid "Dropbox Secret"
 msgstr ""
 
 msgctxt "#30030"
-msgid "User Addons"
+msgid "Installed User Add-ons"
 msgstr ""
 
 msgctxt "#30031"
-msgid "Addon Data"
+msgid "Add-on Settings & Data"
 msgstr ""
 
 msgctxt "#30032"
-msgid "Database"
+msgid "Kodi Databases"
 msgstr ""
 
 msgctxt "#30033"
@@ -126,7 +126,7 @@ msgid "Thumbnails/Fanart"
 msgstr ""
 
 msgctxt "#30035"
-msgid "Config Files"
+msgid "Kodi Configuration Files"
 msgstr ""
 
 msgctxt "#30036"
@@ -659,7 +659,7 @@ msgid "Dropbox Developer Code Needed"
 msgstr "Dropbox Developer Code Needed"
 
 msgctxt "#30164"
-msgid "Exclude TMDb Helper generated image cache"
+msgid "Exclude TMDb Helper Cached Images"
 msgstr ""
 
 msgctxt "#30165"
@@ -667,7 +667,7 @@ msgid "Omits regenerable blur, crop, desaturate and color cache folders; setting
 msgstr ""
 
 msgctxt "#30166"
-msgid "Back up Arctic Fuse 3 configuration"
+msgid "Back Up Arctic Fuse 3 Configuration"
 msgstr ""
 
 msgctxt "#30167"
