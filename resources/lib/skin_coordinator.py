@@ -236,32 +236,41 @@ def inspect_pending_restore(profile_path, rollback_root, pending_path):
 
 def _verify_helper_sources(profile_path, expected, wait=None):
     """Compare currently-applied helper files against the pending
-    restore's captured hashes.
+    restore's captured hashes, waiting for writes to actually settle
+    before judging them.
 
     rebuild_skin() itself rewrites these exact managed helper files as
     part of its own normal menu/widget regeneration - its RunScript
     completion signal can fire well before those writes are fully
-    flushed to disk (confirmed live twice, 2026-09-10 and 2026-09-11: a
-    restore that failed here with mismatched hashes matched exactly,
-    byte for byte, when re-checked a bit later with no further action
-    taken - a settling delay, not corrupted or missing content; the
-    first attempt at this retry window, 20 attempts * 0.25s = 5s, was
-    empirically too short and still failed live, so the same pattern
-    verify_loaded_settings() uses for its live-settings check is kept
-    but with a longer bound here - a real measured need, not a
-    speculative increase). Still fails closed if the mismatch never
-    resolves."""
+    flushed to disk (confirmed live repeatedly, 2026-09-10 and
+    2026-09-11: a restore that failed here with mismatched hashes
+    matched exactly, byte for byte, when re-checked a bit later with no
+    further action taken - a settling delay, not corrupted or missing
+    content). A fixed retry count tuned against one measured delay kept
+    proving insufficient against a longer one (5s, then 15s, both still
+    failed live) - the delay itself isn't a fixed, knowable duration to
+    tune a number against. Poll until two consecutive reads agree with
+    each other (the files have genuinely stopped changing - a single
+    stable snapshot), then judge that stable snapshot once against
+    `expected`; still bounded so a file that never stops changing fails
+    closed rather than looping forever, and still fails if the
+    eventually-stable content is simply wrong."""
     attempts = 60 if wait else 1
+    previous = None
+    actual = None
     for attempt in range(attempts):
         files = read_current_managed_files(profile_path, AF3_ID)
         actual = {
             path: hashlib.sha256(data).hexdigest()
             for path, data in files.items() if path != SETTINGS_PATH
         }
-        if actual == expected:
-            return
+        if actual == previous:
+            break
+        previous = actual
         if wait and attempt < attempts - 1:
             wait(0.25)
+    if actual == expected:
+        return
     raise SkinCoordinatorError(
         'restored AF3 helper sources did not remain applied')
 

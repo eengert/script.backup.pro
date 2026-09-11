@@ -469,6 +469,36 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertEqual(AF3_ID, result['skin_id'])
         self.assertIsNone(skin_state.read_pending_state(self.state))
 
+    def test_finish_waits_for_writes_to_settle_not_a_fixed_retry_count(self):
+        # regression guard: a fixed retry count tuned against one
+        # measured settling delay (5s, then 15s) kept proving
+        # insufficient against a longer one, live, on 2026-09-11 -
+        # rebuild_skin()'s file writes don't finish on any single
+        # knowable schedule. Verification must wait for the files to
+        # actually stop changing (two consecutive reads agreeing), not
+        # assume any fixed number of retries is "long enough" -
+        # simulate a helper file rewritten several times before finally
+        # settling on the correct content.
+        host = FakeHost()
+        pending = self.stage(host)
+        helper = next(iter(pending['helper_hashes']))
+        original = (self.profile / helper).read_bytes()
+        (self.profile / helper).write_bytes(b'{"still-writing": 1}')
+
+        remaining = [b'{"still-writing": 2}', b'{"still-writing": 3}', original]
+
+        def keep_changing(_seconds):
+            if remaining:
+                (self.profile / helper).write_bytes(remaining.pop(0))
+        host.wait = keep_changing
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
+        self.assertEqual([], remaining)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
     def test_finish_rejects_changed_helper_source_and_keeps_pending(self):
         host = FakeHost()
         pending = self.stage(host)
