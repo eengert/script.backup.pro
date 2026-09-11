@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.9
+
+### Added
+
+- Full Arctic Fuse 3 (AF3) skin configuration backup and restore: crash-safe
+  staging and rollback across interruption, previous-appearance restoration,
+  Skin Variables rebuild, and verification of restored settings and helper
+  files.
+- Help and Status main-menu entries.
+- A clear backup-completion summary notification.
+- Updated add-on icon artwork.
+
+### Fixed
+
+- Restore no longer misses Kodi's own skin-change confirmation dialog;
+  Backup Pro now answers it automatically and deterministically.
+- Eliminated false-positive "restore incomplete" reports caused by Skin
+  Variables' own build-fingerprint settings and a timing race in helper-file
+  verification after the skin rebuild.
+- A crash in archive checksum computation on certain files.
+
+### Changed
+
+- The pre-restore confirmation now explains that Kodi will briefly switch to
+  its default skin, restore the backed-up configuration, then reactivate the
+  backed-up skin.
+- The final restore result is now shown as a dialog you must dismiss,
+  instead of a notification that could be missed.
+
+### Removed
+
+- The obsolete v1.5.0 upgrade-notice dialog.
+
+**Apple TV / tvOS**: not validated on physical hardware in this release;
+treat as unsupported until device testing is separately authorized and
+completed.
+
 ## Version 0.9.8
 
 ### Added
