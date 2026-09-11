@@ -519,6 +519,86 @@ class BackupBridgeTests(unittest.TestCase):
             backup_module.xbmc.getInfoLabel = original_get_info
             backup_module.xbmcvfs.translatePath = original_translate
 
+    def test_skin_stage_path_is_unique_across_overlapping_captures(self):
+        # regression guard: the staging directory used to be a single
+        # fixed name (data_dir() + 'skin-staging'), rewritten via
+        # shutil.rmtree()-and-recreate on every capture. Two Backup Pro
+        # invocations overlapping in time (confirmed reproducible this
+        # session: rapid repeated triggers, or one invocation still
+        # finishing while another starts) could then have the second
+        # invocation's capture delete and rewrite the exact files the
+        # first invocation's own manifest-hash and archive-copy reads
+        # were about to see - producing an archived file whose bytes
+        # silently didn't match its own recorded manifest hash (the "AF3
+        # snapshot payload failed verification" restore failure reported
+        # 2026-09-10). A unique per-invocation path removes any
+        # possibility of two invocations sharing one staging directory.
+        original_data_dir = backup_module.utils.data_dir
+        original_capture = backup_module.capture_af3_snapshot
+        original_get_info = backup_module.xbmc.getInfoLabel
+        original_translate = backup_module.xbmcvfs.translatePath
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                addon_data = os.path.join(directory, 'addon')
+                profile = os.path.join(directory, 'profile')
+                os.makedirs(addon_data)
+                os.makedirs(profile)
+                backup_module.utils.data_dir = lambda: addon_data + '/'
+                backup_module.xbmcvfs.translatePath = lambda path: (
+                    profile + '/' if path == 'special://profile/' else path)
+                backup_module.xbmc.getInfoLabel = lambda name: {
+                    'System.FriendlyName': 'MacBook',
+                    'System.ProfileName': 'Master',
+                }.get(name, '')
+                marker_path = 'addon_data/skin.arctic.fuse.3/settings.xml'
+                backup_module.capture_af3_snapshot = lambda *_a, **_k: {
+                    'metadata': {'adapter_id': 'backup-pro.af3'},
+                    'files': {marker_path: b'<settings />'},
+                }
+
+                def make_instance():
+                    instance = object.__new__(XbmcBackup)
+                    instance._skin_stage_path = None
+                    instance._skin_snapshot_metadata = None
+                    instance._skin_managed_exclusions = []
+                    instance._automatic_exclusion_rules = None
+                    instance.remote_vfs = type(
+                        'Remote', (), {'root_path': '/backup/'})()
+                    instance._addBackupDir = lambda name, root, dirs: {
+                        'name': name, 'source': root, 'dest': '/backup/',
+                        'files': [], 'summary': {},
+                    }
+                    return instance
+
+                first = make_instance()
+                first._captureSkinConfigGroup()
+                first_stage = first._skin_stage_path
+                first_marker = os.path.join(first_stage, marker_path)
+                self.assertTrue(os.path.exists(first_marker))
+
+                # a second, "overlapping" invocation captures before the
+                # first one has cleaned up its own staging directory
+                second = make_instance()
+                second._captureSkinConfigGroup()
+                second_stage = second._skin_stage_path
+
+                self.assertNotEqual(first_stage, second_stage)
+                self.assertTrue(
+                    os.path.exists(first_marker),
+                    'the second capture must not disturb the first '
+                    "invocation's still-in-use staging directory")
+                with open(first_marker, 'rb') as handle:
+                    self.assertEqual(b'<settings />', handle.read())
+
+                first._cleanupSkinStage()
+                self.assertFalse(os.path.exists(first_stage))
+                self.assertTrue(os.path.exists(second_stage))
+        finally:
+            backup_module.utils.data_dir = original_data_dir
+            backup_module.capture_af3_snapshot = original_capture
+            backup_module.xbmc.getInfoLabel = original_get_info
+            backup_module.xbmcvfs.translatePath = original_translate
+
     def test_kodi_file_manager_uses_planner_and_keeps_progress_nonzero(self):
         root = '/empty'
         manager = FileManager(FakeVfs({root: ([], [])}, {}))

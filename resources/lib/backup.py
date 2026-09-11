@@ -7,6 +7,7 @@ import xbmcaddon
 import xbmcvfs
 import os.path
 import shutil
+import uuid
 from . import utils as utils
 from datetime import datetime
 from . vfs import XBMCFileSystem, DropboxFileSystem, ZipFileSystem
@@ -1092,15 +1093,28 @@ class XbmcBackup:
             appearance_call=self._skinAppearance,
         )
         owned_paths = managed_source_paths(snapshot['files'])
+        # A unique, per-invocation directory name - not a fixed
+        # 'skin-staging' - matters here specifically: this path is read
+        # twice more after this write (once to hash it for the
+        # manifest, once later to copy its bytes into the archive), and
+        # a fixed name meant a second, overlapping Backup Pro
+        # invocation (confirmed reproducible this session: rapid
+        # repeated triggers, or one invocation still finishing while
+        # another starts) could rmtree()-and-rewrite the very files an
+        # earlier invocation's own hash/copy reads were about to see,
+        # producing an archived file whose bytes silently didn't match
+        # the manifest hash recorded for it - the exact "AF3 snapshot
+        # payload failed verification" restore failure reported
+        # 2026-09-10. A unique path removes the possibility of two
+        # invocations ever sharing one staging directory at all.
         stage_root = os.path.abspath(os.path.join(
-            xbmcvfs.translatePath(utils.data_dir()), 'skin-staging'))
+            xbmcvfs.translatePath(utils.data_dir()),
+            'skin-staging-' + uuid.uuid4().hex))
         data_root = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
         if os.path.dirname(stage_root) != data_root:
             raise SkinAdapterError('invalid skin staging path')
         if os.path.lexists(stage_root):
-            if os.path.islink(stage_root) or not os.path.isdir(stage_root):
-                raise SkinAdapterError('skin staging path is not a safe directory')
-            shutil.rmtree(stage_root)
+            raise SkinAdapterError('skin staging path already exists')
         os.makedirs(stage_root)
         self._skin_stage_path = stage_root
 
@@ -1133,8 +1147,11 @@ class XbmcBackup:
             return
         try:
             data_root = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
-            expected = os.path.join(data_root, 'skin-staging')
-            if os.path.abspath(stage_root) != expected or os.path.islink(stage_root):
+            stage_root = os.path.abspath(stage_root)
+            name = os.path.basename(stage_root)
+            if (os.path.dirname(stage_root) != data_root
+                    or not name.startswith('skin-staging-')
+                    or os.path.islink(stage_root)):
                 utils.log('Refusing unsafe skin-stage cleanup', xbmc.LOGWARNING)
                 return
             if os.path.isdir(stage_root):
