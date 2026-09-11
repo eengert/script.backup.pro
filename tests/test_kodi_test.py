@@ -663,6 +663,162 @@ class KodiHarnessTests(unittest.TestCase):
              MODULE.KODI_USERDATA_DIR, MODULE.KODI_ADDONS_DIR,
              MODULE.KODI_LOG_FILE) = old
 
+    def test_wait_for_ready_succeeds_after_retries(self):
+        attempts = []
+
+        def fake_jsonrpc(method, params=None, **kwargs):
+            attempts.append(method)
+            if len(attempts) < 3:
+                raise RuntimeError("JSON-RPC request failed: connection refused")
+            return {"result": "pong"}
+
+        original_jsonrpc, original_sleep = MODULE.jsonrpc, MODULE.time.sleep
+        MODULE.jsonrpc = fake_jsonrpc
+        MODULE.time.sleep = lambda _seconds: None
+        try:
+            MODULE.wait_for_ready(timeout=5.0)
+            self.assertEqual(attempts, ["JSONRPC.Ping"] * 3)
+        finally:
+            MODULE.jsonrpc, MODULE.time.sleep = original_jsonrpc, original_sleep
+
+    def test_wait_for_ready_raises_after_timeout(self):
+        def fake_jsonrpc(method, params=None, **kwargs):
+            raise RuntimeError("JSON-RPC request failed: connection refused")
+
+        original_jsonrpc, original_sleep = MODULE.jsonrpc, MODULE.time.sleep
+        MODULE.jsonrpc = fake_jsonrpc
+        MODULE.time.sleep = lambda _seconds: None
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                MODULE.wait_for_ready(timeout=0.05)
+            self.assertIn("did not become ready", str(ctx.exception))
+            self.assertIn("connection refused", str(ctx.exception))
+        finally:
+            MODULE.jsonrpc, MODULE.time.sleep = original_jsonrpc, original_sleep
+
+    def test_wait_for_ready_rejects_a_non_pong_response(self):
+        original_jsonrpc, original_sleep = MODULE.jsonrpc, MODULE.time.sleep
+        MODULE.jsonrpc = lambda method, params=None, **kwargs: {"result": "unexpected"}
+        MODULE.time.sleep = lambda _seconds: None
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                MODULE.wait_for_ready(timeout=0.05)
+            self.assertIn("unexpected JSONRPC.Ping response", str(ctx.exception))
+        finally:
+            MODULE.jsonrpc, MODULE.time.sleep = original_jsonrpc, original_sleep
+
+    def _patch_prepare_validation_steps(self, order, jsonrpc_responder):
+        originals = {
+            name: getattr(MODULE, name) for name in (
+                "verify_isolation", "reset", "configure_webserver", "install",
+                "install_dependencies", "install_skin", "configure", "launch",
+                "wait_for_ready", "enable_closure", "stop", "jsonrpc",
+            )
+        }
+        MODULE.verify_isolation = lambda: order.append("verify_isolation")
+        MODULE.reset = lambda: order.append("reset")
+        MODULE.configure_webserver = lambda **kw: order.append(("configure_webserver", kw))
+        MODULE.install = lambda source: order.append(("install", source))
+        MODULE.install_dependencies = lambda source: order.append(
+            ("install_dependencies", source))
+        MODULE.install_skin = lambda skin_id: order.append(("install_skin", skin_id))
+        MODULE.configure = lambda addon_id, values: order.append(
+            ("configure", addon_id, values))
+        MODULE.launch = lambda: order.append("launch")
+        MODULE.wait_for_ready = lambda **kw: order.append("wait_for_ready")
+
+        def fake_enable_closure(seeds, **kw):
+            order.append(("enable_closure", seeds))
+            return seeds
+        MODULE.enable_closure = fake_enable_closure
+        MODULE.stop = lambda: order.append("stop")
+
+        def fake_jsonrpc(method, params=None, **kwargs):
+            order.append(("jsonrpc", method, params))
+            return jsonrpc_responder(method, params)
+        MODULE.jsonrpc = fake_jsonrpc
+        return originals
+
+    def _restore_prepare_validation_steps(self, originals):
+        for name, fn in originals.items():
+            setattr(MODULE, name, fn)
+
+    def test_prepare_validation_follows_the_documented_safe_order(self):
+        order = []
+
+        def jsonrpc_responder(method, params):
+            if method == "Addons.GetAddonDetails":
+                return {"result": {"addon": {"enabled": True}}}
+            if method == "Settings.GetSettingValue":
+                return {"result": {"value": MODULE.AF3_SKIN_ID}}
+            return {"result": "pong"}
+
+        originals = self._patch_prepare_validation_steps(order, jsonrpc_responder)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                dest = Path(d) / "dest"
+                report = MODULE.prepare_validation(destination=dest)
+        finally:
+            self._restore_prepare_validation_steps(originals)
+
+        names = [item if isinstance(item, str) else item[0] for item in order]
+        self.assertEqual(names, [
+            "verify_isolation", "reset", "configure_webserver", "install",
+            "install_dependencies", "install_skin", "configure", "launch",
+            "wait_for_ready", "enable_closure", "stop", "launch",
+            "wait_for_ready", "jsonrpc", "jsonrpc", "jsonrpc",
+        ])
+        # configure_webserver runs before the first launch, with AF3 active
+        self.assertEqual(order[2][1], {
+            "extra_settings": {"lookandfeel.skin": MODULE.AF3_SKIN_ID}})
+        self.assertLess(order.index(order[2]), order.index("launch"))
+        # enable_closure computes the closure itself - no hand-enumerated ids
+        self.assertEqual(order[9][1], [MODULE.ADDON_ID, MODULE.AF3_SKIN_ID])
+        # enable_closure only runs after the first wait_for_ready succeeds
+        self.assertEqual(order[8], "wait_for_ready")
+        self.assertEqual(order[9][0], "enable_closure")
+        self.assertEqual(report["active_skin"], MODULE.AF3_SKIN_ID)
+        self.assertEqual(report["destination"], str(dest))
+        self.assertEqual(report["enabled"], [MODULE.ADDON_ID, MODULE.AF3_SKIN_ID])
+
+    def test_prepare_validation_fails_closed_if_an_addon_is_not_enabled(self):
+        order = []
+
+        def jsonrpc_responder(method, params):
+            if method == "Addons.GetAddonDetails":
+                return {"result": {"addon": {"enabled": False}}}
+            if method == "Settings.GetSettingValue":
+                return {"result": {"value": MODULE.AF3_SKIN_ID}}
+            return {"result": "pong"}
+
+        originals = self._patch_prepare_validation_steps(order, jsonrpc_responder)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                with self.assertRaises(RuntimeError) as ctx:
+                    MODULE.prepare_validation(destination=Path(d) / "dest")
+                self.assertIn("is not enabled", str(ctx.exception))
+        finally:
+            self._restore_prepare_validation_steps(originals)
+
+    def test_prepare_validation_fails_closed_if_active_skin_is_wrong(self):
+        order = []
+
+        def jsonrpc_responder(method, params):
+            if method == "Addons.GetAddonDetails":
+                return {"result": {"addon": {"enabled": True}}}
+            if method == "Settings.GetSettingValue":
+                return {"result": {"value": "skin.estuary"}}
+            return {"result": "pong"}
+
+        originals = self._patch_prepare_validation_steps(order, jsonrpc_responder)
+        try:
+            with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+                with self.assertRaises(RuntimeError) as ctx:
+                    MODULE.prepare_validation(destination=Path(d) / "dest")
+                self.assertIn("active skin is", str(ctx.exception))
+        finally:
+            self._restore_prepare_validation_steps(originals)
+
     def test_install_authorized_network_package_refuses_unauthorized_package(self):
         with self.assertRaises(RuntimeError):
             MODULE.install_authorized_network_package("script.module.something-else")

@@ -429,6 +429,34 @@ def jsonrpc(method: str, params: dict | None = None, port: int = WEBSERVER_PORT,
         raise RuntimeError(f"JSON-RPC request failed: {exc}") from exc
 
 
+def wait_for_ready(timeout: float = 20.0, **jsonrpc_kwargs) -> None:
+    """Poll JSONRPC.Ping until the disposable Kodi instance's webserver
+    actually answers, or raise RuntimeError once timeout seconds have
+    elapsed. A freshly launch()-ed or restarted Kodi process takes a few
+    seconds before its webserver is up - every live batch before this
+    function existed did this ad hoc with a fixed bash sleep/retry loop;
+    this replaces that guessed duration with a real, bounded poll that
+    fails loudly (not silently) if readiness is never reached, so a
+    caller can't mistake "still starting" for "actually ready"."""
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            response = jsonrpc("JSONRPC.Ping", **jsonrpc_kwargs)
+        except RuntimeError as exc:
+            last_error = exc
+        else:
+            if response.get("result") == "pong":
+                return
+            last_error = RuntimeError(
+                f"unexpected JSONRPC.Ping response: {response!r}")
+        time.sleep(0.5)
+    message = f"disposable Kodi's JSON-RPC did not become ready within {timeout}s"
+    if last_error is not None:
+        message += f": {last_error}"
+    raise RuntimeError(message)
+
+
 def enable_addon(addon_id: str, **jsonrpc_kwargs) -> dict:
     """Enable an installed add-on via JSON-RPC. A freshly install()-ed
     add-on is not enabled by default, and Addons.ExecuteAddon fails
@@ -506,6 +534,68 @@ def enable_closure(seed_ids: list[str], **jsonrpc_kwargs) -> list[str]:
     ids = _installed_addon_closure(seed_ids)
     enable_addons(ids, **jsonrpc_kwargs)
     return ids
+
+
+def prepare_validation(destination: Path | None = None, **jsonrpc_kwargs) -> dict:
+    """One-command Phase 9b human-validation preparation: reset the
+    disposable profile, install Backup Pro and Arctic Fuse 3 with their
+    full dependency closures, enable everything, and leave Kodi running
+    with AF3 active - so a human only has to do the genuinely subjective
+    visual/appearance confirmation, not rediscover/enable dependency ids
+    by hand (see docs/MAC_KODI_VALIDATION.md for the defect this
+    replaces). Composes only already-proven primitives in the documented
+    safe order - configure_webserver() before the first launch(),
+    enable_closure() only after wait_for_ready() confirms JSON-RPC is
+    actually up, and a real restart() (not a live settings change) so
+    AF3 activation and the enabled add-ons actually take effect. Returns
+    a small report a human can read directly; raises RuntimeError (fails
+    closed) on any verification failure rather than leaving Kodi running
+    in a state that looks ready but isn't."""
+    verify_isolation()
+    reset()
+    configure_webserver(extra_settings={"lookandfeel.skin": AF3_SKIN_ID})
+    install(PROJECT)
+    install_dependencies(PROJECT)
+    install_skin(AF3_SKIN_ID)
+    dest = destination if destination is not None else (ROOT / "backup-dest")
+    dest.mkdir(parents=True, exist_ok=True)
+    configure(ADDON_ID, {
+        "remote_path": str(dest),
+        "remote_selection": "0",
+        "backup_skin_config": "true",
+    })
+    launch()
+    wait_for_ready(**jsonrpc_kwargs)
+    enabled = enable_closure([ADDON_ID, AF3_SKIN_ID], **jsonrpc_kwargs)
+    stop()
+    launch()
+    wait_for_ready(**jsonrpc_kwargs)
+
+    backup_pro = jsonrpc("Addons.GetAddonDetails", {
+        "addonid": ADDON_ID, "properties": ["enabled"]}, **jsonrpc_kwargs)
+    skin = jsonrpc("Addons.GetAddonDetails", {
+        "addonid": AF3_SKIN_ID, "properties": ["enabled"]}, **jsonrpc_kwargs)
+    active_skin = jsonrpc("Settings.GetSettingValue",
+                           {"setting": "lookandfeel.skin"}, **jsonrpc_kwargs)
+    if not backup_pro.get("result", {}).get("addon", {}).get("enabled"):
+        raise RuntimeError(f"{ADDON_ID} is not enabled after prepare_validation()")
+    if not skin.get("result", {}).get("addon", {}).get("enabled"):
+        raise RuntimeError(f"{AF3_SKIN_ID} is not enabled after prepare_validation()")
+    active = active_skin.get("result", {}).get("value")
+    if active != AF3_SKIN_ID:
+        raise RuntimeError(
+            f"active skin is {active!r}, expected {AF3_SKIN_ID!r} after "
+            "prepare_validation()")
+
+    return {
+        "destination": str(dest),
+        "enabled": enabled,
+        "active_skin": active,
+        "webserver": {
+            "port": jsonrpc_kwargs.get("port", WEBSERVER_PORT),
+            "username": jsonrpc_kwargs.get("username", WEBSERVER_USERNAME),
+        },
+    }
 
 
 def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dict:
@@ -654,6 +744,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
     p = sub.add_parser("install-network-package")
     p.add_argument("addon_id")
+    p = sub.add_parser("prepare-validation")
+    p.add_argument("--destination", type=Path, default=None,
+                    help="local backup destination (default: "
+                         "<disposable-root>/backup-dest)")
     args = parser.parse_args(argv)
     try:
         if args.command == "verify": result = verify_isolation()
@@ -687,6 +781,8 @@ def main(argv: list[str]) -> int:
             result = {"enabled": enable_closure(args.addon_ids)}
         elif args.command == "install-network-package":
             result = install_authorized_network_package(args.addon_id)
+        elif args.command == "prepare-validation":
+            result = prepare_validation(args.destination)
         else:
             result = execute_addon(args.addon_id, args.params or None)
         print(json.dumps(result, indent=2, sort_keys=True))
