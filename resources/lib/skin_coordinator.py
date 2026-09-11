@@ -276,9 +276,32 @@ def _verify_helper_sources(profile_path, expected, wait=None):
     already-documented settling window (rebuild_skin()'s completion
     signal can fire before its writes are flushed) - not the multi-wave,
     multi-minute churn that turned out to be this comparison bug
-    manifesting as "it never converges", not real settling time."""
-    attempts = 120 if wait else 1
+    manifesting as "it never converges", not real settling time.
+
+    2026-09-11 follow-up: Eric reported the final restore dialog itself
+    (shown only after this function - and everything else in
+    finish_skin_restore() - already returned) was being dismissed 2-3s
+    after it appeared, by what could only be a later, asynchronous AF3
+    shortcut-rebuild reinit still in flight - rebuild_skin()'s
+    ReloadSkin() triggers AF3's own onload-driven rebuild chain
+    (Includes_Actions.xml's Action_BuildShortcuts_OnLoad/OnUnLoad),
+    which keeps running via Kodi's own window lifecycle independently of
+    this synchronous call chain, and can still touch these exact tracked
+    files again shortly after they briefly read as correct. A single
+    match against `expected` was sound for *correctness* but was never
+    proof the cascade had actually finished - just that it happened to
+    read correctly at that instant. Now requires the match to hold for
+    a full observed dismissal window (12 consecutive matches, 0.25s
+    apart - 3s) before trusting it and returning, so a straggler reinit
+    within that window resets the count and keeps polling instead of
+    letting the caller display something that gets torn down moments
+    later. Still always judged against `expected`, never against a
+    prior read, so this cannot regress into the disproven "stable but
+    wrong" design above."""
+    attempts = 132 if wait else 1
+    required_consecutive_matches = 12 if wait else 1
     actual = None
+    consecutive_matches = 0
     for attempt in range(attempts):
         files = read_current_managed_files(profile_path, AF3_ID)
         actual = {
@@ -286,7 +309,11 @@ def _verify_helper_sources(profile_path, expected, wait=None):
             for path, data in files.items() if path in expected
         }
         if actual == expected:
-            return
+            consecutive_matches += 1
+            if consecutive_matches >= required_consecutive_matches:
+                return
+        else:
+            consecutive_matches = 0
         if wait and attempt < attempts - 1:
             wait(0.25)
     raise SkinCoordinatorError(

@@ -495,6 +495,49 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertEqual([], remaining)
         self.assertIsNone(skin_state.read_pending_state(self.state))
 
+    def test_finish_requires_a_confirmed_quiet_window_after_a_straggler_reinit(self):
+        # regression guard, 2026-09-11: Eric reported the final restore
+        # dialog (shown only after finish_skin_restore() already
+        # returned - see _restoreSkinConfig() in backup.py) was
+        # dismissed 2-3s after it appeared. Root cause: rebuild_skin()'s
+        # ReloadSkin() triggers AF3's own onload-driven shortcut-rebuild
+        # chain, which keeps running via Kodi's window lifecycle
+        # independently of this synchronous call chain and can briefly
+        # let a helper file read correctly before rewriting it again a
+        # moment later. A single match against `expected` proved
+        # correctness at that instant, never that the cascade had
+        # actually finished - simulate exactly that: the file already
+        # matches, a straggler reinit corrupts it a few ticks in, then
+        # it settles back - and confirm verification does not return
+        # until the match has held for a full confirmed-quiet window
+        # afterward, not just on the first (pre-straggler) streak.
+        host = FakeHost()
+        pending = self.stage(host)
+        helper = next(iter(pending['helper_hashes']))
+        original = (self.profile / helper).read_bytes()
+
+        ticks = {'n': 0}
+
+        def straggler_reinit(_seconds):
+            ticks['n'] += 1
+            if ticks['n'] == 3:
+                (self.profile / helper).write_bytes(
+                    b'{"straggler-reinit": true}')
+            elif ticks['n'] == 4:
+                (self.profile / helper).write_bytes(original)
+        host.wait = straggler_reinit
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
+        # the straggler must have actually fired during verification,
+        # proving this didn't just return on the very first read before
+        # ever seeing it (which is exactly what the disproven
+        # single-match design would have done here).
+        self.assertGreaterEqual(ticks['n'], 4)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
     def test_finish_ignores_helper_files_rebuild_creates_that_backup_never_captured(self):
         # regression guard, root-caused 2026-09-11: three straight fixed-
         # bound widenings (15s, 100s, 300s) all failed live even though
