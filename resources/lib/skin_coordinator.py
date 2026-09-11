@@ -240,16 +240,18 @@ def _verify_helper_sources(profile_path, expected, wait=None):
 
     rebuild_skin() itself rewrites these exact managed helper files as
     part of its own normal menu/widget regeneration - its RunScript
-    completion signal can fire a moment before those writes are fully
-    flushed to disk (confirmed live 2026-09-10: a restore that failed
-    here with mismatched hashes matched exactly, byte for byte, when
-    re-checked a few seconds later with no further action taken - a
-    settling delay, not corrupted or missing content). Retry briefly
-    using the same bounded pattern verify_loaded_settings() already
-    uses for its live-settings check, rather than treating that delay
-    as a real failure; still fails closed if the mismatch never
+    completion signal can fire well before those writes are fully
+    flushed to disk (confirmed live twice, 2026-09-10 and 2026-09-11: a
+    restore that failed here with mismatched hashes matched exactly,
+    byte for byte, when re-checked a bit later with no further action
+    taken - a settling delay, not corrupted or missing content; the
+    first attempt at this retry window, 20 attempts * 0.25s = 5s, was
+    empirically too short and still failed live, so the same pattern
+    verify_loaded_settings() uses for its live-settings check is kept
+    but with a longer bound here - a real measured need, not a
+    speculative increase). Still fails closed if the mismatch never
     resolves."""
-    attempts = 20 if wait else 1
+    attempts = 60 if wait else 1
     for attempt in range(attempts):
         files = read_current_managed_files(profile_path, AF3_ID)
         actual = {
