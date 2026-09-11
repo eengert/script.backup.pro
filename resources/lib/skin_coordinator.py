@@ -248,31 +248,32 @@ def _verify_helper_sources(profile_path, expected, wait=None):
     further action taken - a settling delay, not corrupted or missing
     content). A fixed retry count tuned against one measured delay kept
     proving insufficient against a longer one (5s, then 15s, both still
-    failed live) - the delay itself isn't a fixed, knowable duration to
-    tune a number against, so this polls until two consecutive reads
-    agree with each other (the files have genuinely stopped changing - a
-    single stable snapshot) rather than assuming any fixed count means
-    "done". That alone wasn't the whole story: live instrumentation on
-    2026-09-11 caught a *second*, later wave of these same writes -
-    rebuild_skin()'s own ReloadSkin() call (after its own completion
-    signal fires) makes AF3 re-initialize every window, and AF3's own
-    onload hooks re-invoke Skin Variables per window as they load,
-    entirely outside rebuild_skin()'s completion signal and with no
-    "done" signal of its own. A direct trace of that run showed Skin
-    Variables invocations still firing ~2s after a 15s stability bound
-    had already given up, and the files matched `expected` exactly a
-    moment later with no further action taken - the same settling
-    pattern, just from a second, uninstrumented source. There is no
-    completion signal available for that second wave (it lives inside
-    third-party skin/add-on XML this project doesn't control), so the
-    bound below is sized with a wide margin over that observed ~8s
-    two-wave settling time rather than tuned to the minimum that once
-    happened to work; it still fails closed - a file that never stops
-    changing, or a stable value that's simply wrong, still fails - so
-    this bounds against a genuine hang without pretending to know a
-    precise duration for either wave."""
+    failed live).
+
+    A "wait for two consecutive reads to agree, then judge once" design
+    was tried next and was itself proven wrong by direct instrumentation
+    on 2026-09-11: rebuild_skin()'s ReloadSkin() call makes AF3
+    re-initialize its Home window repeatedly (a live trace showed Home
+    re-initializing roughly every ~2s, each time re-invoking Skin
+    Variables), and between those bursts the files sit briefly quiet on
+    *transitional* content - internally self-consistent for a moment,
+    but not yet the final value. Two consecutive matching reads during
+    one of those lulls looks identical to genuine completion, so that
+    design kept declaring victory on the wrong content and failing
+    immediately instead of continuing to poll - it was measurably worse
+    than simply retrying, since it gave up the moment it saw *any*
+    stable-looking plateau rather than the *right* one.
+
+    The correct check is simpler than either prior attempt: the actual
+    success condition is "the content equals what the backup captured",
+    not "the content stopped changing" - so return the instant a read
+    matches `expected` rather than waiting for extra confirmation first.
+    Keep retrying on every mismatch (transitional or otherwise) up to a
+    generous bound, sized with a wide margin over the multi-burst
+    settling this project has now directly observed taking several
+    seconds. Still fails closed: a file that never reaches `expected`
+    within the bound raises, using whatever the last read was."""
     attempts = 400 if wait else 1
-    previous = None
     actual = None
     for attempt in range(attempts):
         files = read_current_managed_files(profile_path, AF3_ID)
@@ -280,13 +281,10 @@ def _verify_helper_sources(profile_path, expected, wait=None):
             path: hashlib.sha256(data).hexdigest()
             for path, data in files.items() if path != SETTINGS_PATH
         }
-        if actual == previous:
-            break
-        previous = actual
+        if actual == expected:
+            return
         if wait and attempt < attempts - 1:
             wait(0.25)
-    if actual == expected:
-        return
     raise SkinCoordinatorError(
         'restored AF3 helper sources did not remain applied')
 
