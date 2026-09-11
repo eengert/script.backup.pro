@@ -234,15 +234,34 @@ def inspect_pending_restore(profile_path, rollback_root, pending_path):
     return {'action': action, 'phase': phase, 'status': status}
 
 
-def _verify_helper_sources(profile_path, expected):
-    files = read_current_managed_files(profile_path, AF3_ID)
-    actual = {
-        path: hashlib.sha256(data).hexdigest()
-        for path, data in files.items() if path != SETTINGS_PATH
-    }
-    if actual != expected:
-        raise SkinCoordinatorError(
-            'restored AF3 helper sources did not remain applied')
+def _verify_helper_sources(profile_path, expected, wait=None):
+    """Compare currently-applied helper files against the pending
+    restore's captured hashes.
+
+    rebuild_skin() itself rewrites these exact managed helper files as
+    part of its own normal menu/widget regeneration - its RunScript
+    completion signal can fire a moment before those writes are fully
+    flushed to disk (confirmed live 2026-09-10: a restore that failed
+    here with mismatched hashes matched exactly, byte for byte, when
+    re-checked a few seconds later with no further action taken - a
+    settling delay, not corrupted or missing content). Retry briefly
+    using the same bounded pattern verify_loaded_settings() already
+    uses for its live-settings check, rather than treating that delay
+    as a real failure; still fails closed if the mismatch never
+    resolves."""
+    attempts = 20 if wait else 1
+    for attempt in range(attempts):
+        files = read_current_managed_files(profile_path, AF3_ID)
+        actual = {
+            path: hashlib.sha256(data).hexdigest()
+            for path, data in files.items() if path != SETTINGS_PATH
+        }
+        if actual == expected:
+            return
+        if wait and attempt < attempts - 1:
+            wait(0.25)
+    raise SkinCoordinatorError(
+        'restored AF3 helper sources did not remain applied')
 
 
 def _read_verified_forward_files(profile_path, pending):
@@ -369,7 +388,7 @@ def finish_skin_restore(profile_path, rollback_root, pending_path, host):
             raise SkinCoordinatorError('AF3 changed during restore rebuild')
         _call(host, 'verify_loaded_settings', AF3_ID,
               pending['skin_settings'])
-        _verify_helper_sources(profile_path, pending['helper_hashes'])
+        _verify_helper_sources(profile_path, pending['helper_hashes'], host.wait)
         clear_pending_state(pending_path, pending)
         _progress(host, 100, 'AF3 restore complete')
         return {
@@ -474,7 +493,7 @@ def rollback_skin_restore(profile_path, rollback_root, pending_path, host):
         else:
             _call(host, 'verify_rollback_settings_unchanged', AF3_ID,
                   settings_document)
-        _verify_helper_sources(profile_path, target['helper_hashes'])
+        _verify_helper_sources(profile_path, target['helper_hashes'], host.wait)
         clear_pending_state(pending_path, pending)
         _progress(host, 100, 'AF3 rollback complete')
         return {
