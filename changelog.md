@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.10
+
+### Fixed
+
+- Backup failures are now tracked per file, not just the first one encountered,
+  and reported in a clear, persistent dialog stating what failed and why --
+  instead of a vague, easily-missed notification that could be mistaken for a
+  partial success. A failed backup was already correctly discarded and never
+  offered as a restore point; this release only makes that failure clearly
+  reported instead of silently confusing.
+- Status now correctly reflects your real backup history via a small local
+  completion marker, instead of always reporting no backup history regardless
+  of past successful backups.
+
+### Changed
+
+- Successful backups now show a persistent confirmation dialog stating the
+  backup is valid and can be restored, instead of a transient notification
+  that could be missed.
+- Backup setting names are clearer: Add-on Settings & Data, Exclude TMDb
+  Helper Cached Images, Back Up Arctic Fuse 3 Configuration, Kodi
+  Configuration Files, Kodi Databases, Installed User Add-ons (setting IDs
+  and behavior are unchanged).
+- Help has been rewritten as organized, friendly sections covering what gets
+  backed up, compression, destination and storage, restore, scheduling,
+  status, and the difference between an expected skip and a real failure.
+
 ## Version 0.9.9
 
 ### Added
