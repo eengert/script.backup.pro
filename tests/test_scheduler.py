@@ -158,5 +158,54 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         self.assertIn('string:30053', fake_utils.notifications)
 
 
+class RefusingDialog:
+    """A Dialog that fails the test if scheduler init ever shows UI."""
+
+    def __getattr__(self, name):
+        raise AssertionError(
+            'BackupScheduler.__init__() must not show any dialog on a '
+            'fresh profile (attempted: %s)' % name)
+
+
+class SchedulerInitTests(unittest.TestCase):
+    def test_init_shows_no_dialog_on_a_fresh_profile(self):
+        # regression guard: __init__() used to unconditionally show a
+        # one-time "Version 1.5.0 requires you to setup your file
+        # selections again - this is a breaking change" OK dialog (gated
+        # on a hidden upgrade_notes setting whose default made it fire
+        # on every fresh install), inherited unchanged from the original
+        # Backup add-on this was forked from. No current migration or
+        # compatibility behavior depended on it -- upgrade_notes was
+        # read/written nowhere else in the codebase -- so it was pure
+        # dead legacy messaging referencing a version (1.5.0) predating
+        # this add-on's own 0.9.8 versioning. Removed 2026-09-10.
+        class FakeUtilsForInit:
+            def getSettingBool(self, _name):
+                return False
+
+            def data_dir(self):
+                return '/profile/addon_data/script.backup.pro/'
+
+            def getString(self, string_id):
+                return 'string:%s' % string_id
+
+        class FakeVfs:
+            def exists(self, _path):
+                return False
+
+            def translatePath(self, path):
+                return path
+
+        with mock.patch.object(
+                scheduler_module, 'utils', FakeUtilsForInit()), \
+                mock.patch.object(scheduler_module, 'xbmcvfs', FakeVfs()), \
+                mock.patch.object(
+                    scheduler_module, 'xbmcgui',
+                    type('xbmcgui', (), {'Dialog': RefusingDialog})()):
+            scheduler = scheduler_module.BackupScheduler()
+
+        self.assertFalse(scheduler.enabled)
+
+
 if __name__ == '__main__':
     unittest.main()

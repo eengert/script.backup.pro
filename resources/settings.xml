@@ -69,15 +69,6 @@
           <default>false</default>
           <control type="toggle" />
         </setting>
-        <!-- upgrade notes not visible to users -->
-        <setting id="upgrade_notes" type="integer" label="upgrade_notes" help="">
-          <level>4</level>
-          <default>1</default>
-          <visible>false</visible>
-          <control type="edit" format="integer">
-            <heading>upgrade_notes</heading>
-          </control>
-        </setting>
       </group>
     </category>
     <category id="backup_path" label="30048" help="">
