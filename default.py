@@ -4,6 +4,7 @@ import resources.lib.utils as utils
 from resources.lib.backup import XbmcBackup
 from resources.lib.authorizers import DropboxAuthorizer
 from resources.lib.advanced_editor import AdvancedBackupEditor
+from resources.lib.help_content import build_help_text
 
 # mode constants
 BACKUP = 0
@@ -13,10 +14,6 @@ ADVANCED_EDITOR = 3
 LAUNCHER = 4
 HELP = 5
 STATUS = 6
-
-# concise, non-technical bullet points shown by the Help menu entry, in
-# display order
-HELP_STRING_IDS = [30184, 30185, 30186, 30187, 30188, 30189, 30190, 30191]
 
 # maps buildStatusReport()'s label keys to their localized string ids
 STATUS_LABEL_STRING_IDS = {
@@ -33,8 +30,8 @@ STATUS_LABEL_STRING_IDS = {
 
 
 def show_help():
-    body = '\n\n'.join(utils.getString(sid) for sid in HELP_STRING_IDS)
-    xbmcgui.Dialog().textviewer(utils.getString(30010), body)
+    xbmcgui.Dialog().textviewer(
+        utils.getString(30010), build_help_text(utils.getString))
 
 
 def show_status(active_backup):

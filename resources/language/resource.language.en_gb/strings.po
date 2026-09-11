@@ -785,3 +785,131 @@ msgstr ""
 msgctxt "#30195"
 msgid "This backup is valid and can be restored"
 msgstr ""
+
+msgctxt "#30196"
+msgid "Overview"
+msgstr ""
+
+msgctxt "#30197"
+msgid "Backup Pro protects your Kodi setup - your media library database, playlists, add-ons, settings and configuration files - so a crash, a bad update or an accidental change never means starting over from scratch."
+msgstr ""
+
+msgctxt "#30198"
+msgid "Each backup you run becomes a restore point. A restore point only shows up in Restore after its backup has finished and been verified - a backup that fails or is left incomplete is discarded automatically and never offered as something you can restore."
+msgstr ""
+
+msgctxt "#30199"
+msgid "Restores are verified too: your files are checked before anything on your system is touched, and again after they are put back, before the restore is considered complete."
+msgstr ""
+
+msgctxt "#30200"
+msgid "What Gets Backed Up"
+msgstr ""
+
+msgctxt "#30201"
+msgid "Add-on Settings & Data includes every add-on's own settings and saved data - login details, saved caches, watch history for add-ons that keep their own, and similar files."
+msgstr ""
+
+msgctxt "#30202"
+msgid "Kodi Configuration Files covers Kodi's own settings, such as guisettings.xml and sources.xml - your general Kodi setup, separate from any single add-on."
+msgstr ""
+
+msgctxt "#30203"
+msgid "Kodi Databases backs up your library databases - the catalogue of your movies, TV shows, music and similar - along with playback and view state."
+msgstr ""
+
+msgctxt "#30204"
+msgid "Installed User Add-ons backs up the add-ons you installed yourself, so they come back exactly as they were, without needing to reinstall or reconfigure each one."
+msgstr ""
+
+msgctxt "#30205"
+msgid "Back Up Arctic Fuse 3 Configuration captures your Arctic Fuse 3 skin setup and its Skin Variables data through its own dedicated, verified recovery process, kept separate from the other backup sets."
+msgstr ""
+
+msgctxt "#30206"
+msgid "Exclude TMDb Helper Cached Images leaves out TMDb Helper's regenerable image cache (blur, crop, desaturate and colour variants) to keep backups smaller and faster - none of TMDb Helper's own settings or databases are affected."
+msgstr ""
+
+msgctxt "#30207"
+msgid "Compression"
+msgstr ""
+
+msgctxt "#30208"
+msgid "Compress Archives packs your backup into a single zip file instead of a plain folder of files. A compressed backup takes up less space, at the cost of extra CPU time to compress it during backup and extract it during restore."
+msgstr ""
+
+msgctxt "#30209"
+msgid "Whether compression makes a backup faster or slower overall depends on your device and destination - a slow network or slow storage can make a smaller, compressed archive quicker to transfer, while fast local storage may finish sooner uncompressed. There is no single right answer for every setup."
+msgstr ""
+
+msgctxt "#30210"
+msgid "Destination / Storage"
+msgstr ""
+
+msgctxt "#30211"
+msgid "The backup destination is where your backups are written - any location Kodi can write to, or Dropbox cloud storage. Make sure the destination has enough free space before backing up; Backup Pro measures the backup beforehand so you can check, when the destination allows it."
+msgstr ""
+
+msgctxt "#30212"
+msgid "Restore"
+msgstr ""
+
+msgctxt "#30213"
+msgid "Restore brings back a previously verified backup. You choose which backup sets to bring back the same way you chose them when backing up."
+msgstr ""
+
+msgctxt "#30214"
+msgid "Restoring your Arctic Fuse 3 configuration is handled on its own: Kodi will briefly switch to its default skin, put your saved configuration back in place, then switch back to Arctic Fuse 3 automatically."
+msgstr ""
+
+msgctxt "#30215"
+msgid "Kodi will ask whether to keep the new skin during that switch - Backup Pro answers this for you automatically, so you do not need to respond to it yourself."
+msgstr ""
+
+msgctxt "#30216"
+msgid "The restore is not considered finished until your settings and skin files are verified as correctly applied - you will see a clear confirmation once that check has passed."
+msgstr ""
+
+msgctxt "#30217"
+msgid "Scheduling"
+msgstr ""
+
+msgctxt "#30218"
+msgid "Turning on scheduled backups from Settings lets Backup Pro run backups automatically on a regular basis, using whichever backup sets and destination you have configured, without you needing to start them by hand."
+msgstr ""
+
+msgctxt "#30219"
+msgid "Status"
+msgstr ""
+
+msgctxt "#30220"
+msgid "Status shows when your last successful backup completed, where backups are being sent, whether a restore is waiting to be finished or rolled back, and whether scheduled backups are turned on."
+msgstr ""
+
+msgctxt "#30221"
+msgid "\"No backup history\" means Backup Pro has no record of a completed, verified backup yet - either none has been run, or the most recent attempt did not finish successfully."
+msgstr ""
+
+msgctxt "#30222"
+msgid "Warnings and Failures"
+msgstr ""
+
+msgctxt "#30223"
+msgid "Some files being left out is not the same as a backup failing. Certain regenerable caches are skipped on purpose (see What Gets Backed Up); a backup that only skips these is still verified and safe to restore from."
+msgstr ""
+
+msgctxt "#30224"
+msgid "A backup that could not copy or verify its files is treated as failed - you will see a clear message explaining what went wrong, and it will not be offered as a restore point. Only a backup that finished and passed verification ever appears in Restore or Status."
+msgstr ""
+
+msgctxt "#30225"
+msgid "Safety / Limitations"
+msgstr ""
+
+msgctxt "#30226"
+msgid "If a restore is interrupted, let Backup Pro's own recovery continue or roll it back rather than editing skin files by hand."
+msgstr ""
+
+msgctxt "#30227"
+msgid "Apple TV and tvOS have not been validated on physical hardware and should be treated as unsupported until that testing has been separately completed."
+msgstr ""
