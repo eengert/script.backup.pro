@@ -54,22 +54,23 @@ def validate_skin_id(skin_id):
 def volatile_skin_setting(setting_id):
     """Exclude Skin Variables build fingerprints, not user preferences.
 
-    Live restore testing 2026-09-10 found `script-skinviewtypes-hash`
-    (Skin Variables' view-type build fingerprint) reappearing in
-    settings.xml immediately after AF3 reactivates - the exact same
-    kind of self-written, session-local cache key as
-    `script-skinvariables-images-hash` (already excluded here), just
-    missing the `-variables-` segment this pattern required. Because it
-    slipped through, verify_loaded_settings() compared a staged
-    snapshot from before AF3 reloaded against a live settings.xml that
-    had since gained this one extra key, failed the exact-set
-    comparison, and reported the whole restore as incomplete even
-    though every real user setting matched. Broadened to
-    `script-skin*-hash` to catch this and any future sibling build
-    fingerprint Skin Variables writes the same way, without excluding
+    Live restore testing 2026-09-10 found two sibling self-written,
+    session-local cache keys reappearing in settings.xml as an ordinary
+    side effect of AF3 reactivating and rebuilding, each missed by an
+    earlier, narrower version of this pattern: `script-skinviewtypes-hash`
+    (missing the `-variables-` segment a `script-skinvariables-*-hash`
+    pattern required) and, once rebuild_skin() itself ran and
+    regenerated view templates, `script-skinviewtypes-checksum` (a
+    `-checksum` suffix, not `-hash`) - confirmed by diffing the staged
+    snapshot against live settings.xml at the exact
+    verify_loaded_settings() failure point both times: it was the only
+    difference, every real user setting matched. Matches any
+    `script-skin*` id ending in either `-hash` or `-checksum`, the two
+    build-fingerprint suffixes actually observed, without excluding
     anything that looks like a real, user-authored setting."""
     return (setting_id.startswith('script-skin')
-            and setting_id.endswith('-hash'))
+            and (setting_id.endswith('-hash')
+                 or setting_id.endswith('-checksum')))
 
 
 def checked_skin_setting_values(values):
