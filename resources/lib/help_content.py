@@ -8,7 +8,7 @@ from __future__ import unicode_literals
 HELP_SECTIONS = [
     (30196, [30197, 30198, 30199]),          # Overview
     (30200, [30201, 30202, 30203, 30204, 30205, 30206]),  # What gets backed up
-    (30207, [30208, 30209]),                 # Compression
+    (30207, [30208, 30209, 30228]),           # Compression
     (30210, [30211]),                        # Destination / storage
     (30212, [30213, 30214, 30215, 30216]),   # Restore
     (30217, [30218]),                        # Scheduling

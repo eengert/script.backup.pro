@@ -9,7 +9,13 @@
           <default>false</default>
           <control type="toggle" />
         </setting>
-        <!-- zip folder staging path -->
+        <!-- Internal-only local staging scratch path used while building a
+             compressed archive before it is copied to the one configured
+             backup destination (see "Backup Path" below) - never a second
+             destination, so this is never shown in the UI. Retained (not
+             removed) so any already-persisted value keeps working exactly
+             as before for existing users; the default ("special://temp")
+             is correct for virtually everyone. -->
         <setting id="zip_temp_path" type="string" label="30152" help="30153">
 	        <level>3</level>
 	          <default>special://temp</default>
@@ -17,7 +23,7 @@
 		          <allowempty>true</allowempty>
 	          </constraints>
             <dependencies>
-              <dependency type="visible" setting="compress_backups">true</dependency>
+              <dependency type="visible">false</dependency>
             </dependencies>
 	          <control type="edit" format="string">
 		          <heading>30152</heading>

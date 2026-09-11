@@ -913,3 +913,7 @@ msgstr ""
 msgctxt "#30227"
 msgid "Apple TV and tvOS have not been validated on physical hardware and should be treated as unsupported until that testing has been separately completed."
 msgstr ""
+
+msgctxt "#30228"
+msgid "Compress Archives only changes the archive format - it always uses the same backup destination configured below, whether compression is on or off. You never need to set up or manage a separate location for compressed backups."
+msgstr ""

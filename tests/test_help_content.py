@@ -76,6 +76,15 @@ class HelpContentTests(unittest.TestCase):
         # section's own header+body, a larger gap between sections)
         self.assertIn('\n\n\n', text)
 
+    def test_compression_section_explains_the_shared_destination(self):
+        # regression guard, 2026-09-11: Eric's complaint was that
+        # enabling Compress Archives appeared to expose/require a
+        # separate destination. Help must say plainly that it doesn't.
+        compression_section = next(
+            body_ids for header_id, body_ids in HELP_SECTIONS
+            if header_id == 30207)
+        self.assertIn(30228, compression_section)
+
 
 if __name__ == '__main__':
     unittest.main()
