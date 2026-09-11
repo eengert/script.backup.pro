@@ -269,11 +269,26 @@ def _verify_helper_sources(profile_path, expected, wait=None):
     not "the content stopped changing" - so return the instant a read
     matches `expected` rather than waiting for extra confirmation first.
     Keep retrying on every mismatch (transitional or otherwise) up to a
-    generous bound, sized with a wide margin over the multi-burst
-    settling this project has now directly observed taking several
-    seconds. Still fails closed: a file that never reaches `expected`
-    within the bound raises, using whatever the last read was."""
-    attempts = 400 if wait else 1
+    generous bound. Still fails closed: a file that never reaches
+    `expected` within the bound raises, using whatever the last read was.
+
+    That eager-match logic was live-reproved correct (a failed run's
+    files matched `expected` exactly moments later, every time this was
+    checked), but the 100s bound from the previous commit still proved
+    insufficient live on 2026-09-11: the disposable validation profile
+    kept re-initializing its Home window roughly every ~2s for over two
+    minutes straight after a restore, each time re-invoking Skin
+    Variables. That is unusually persistent for what should be a
+    one-time (or few-time) rebuild settling, and may be specific to this
+    project's disposable, content-less test profile - AF3 widgets
+    retrying failed library/network lookups in a loop is a plausible
+    cause that would not occur on a real profile with real content - but
+    that suspicion is not yet confirmed, so the bound is widened again
+    rather than assumed unnecessary. Whoever next investigates this
+    should check whether a real (non-disposable) Kodi profile settles
+    materially faster; if so, the long bound here is just a safety net
+    that production restores are never expected to approach."""
+    attempts = 1200 if wait else 1
     actual = None
     for attempt in range(attempts):
         files = read_current_managed_files(profile_path, AF3_ID)
