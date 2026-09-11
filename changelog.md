@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.12
+
+### Fixed
+
+- Enabling Compress Archives no longer exposes a separate "Set Zip File
+  Location" setting. That setting was only ever an internal staging path used
+  while building the archive on local disk, never a second destination -
+  compressed and uncompressed backups have always been written to the same
+  configured backup destination, and now the settings screen reflects that.
+
+### Changed
+
+- Help's Compression section now explains plainly that compression only
+  changes the archive format and always uses the same configured backup
+  location.
+
 ## Version 0.9.11
 
 ### Fixed
