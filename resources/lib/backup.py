@@ -512,6 +512,36 @@ class XbmcBackup:
                 continue
         return False
 
+    @staticmethod
+    def _skinLabel(skin):
+        try:
+            name = xbmcaddon.Addon(skin).getAddonInfo('name')
+            return name if name else skin
+        except Exception:
+            return skin
+
+    @staticmethod
+    def _confirmSkinChange():
+        """Answer Kodi's own 'keep this skin?' safety dialog with Yes.
+
+        This dialog auto-reverts if nobody responds within its own
+        short countdown - too brief for a human to reliably react to
+        (reported 2026-09-10: it appeared and reverted before the user
+        got a usable chance to click Yes). Backup Pro itself requested
+        this exact skin change as part of a restore it is already
+        performing, so the answer is never actually in doubt - confirm
+        it immediately with Kodi's own input builtins (no JSON-RPC or
+        webserver needed; this runs in-process like any other Program
+        add-on action). Reads the currently focused control's label
+        first rather than assuming a fixed navigation direction, since
+        this dialog's default focus was never directly observed for
+        certain in every case - only move if it isn't already on Yes.
+        """
+        if xbmc.getInfoLabel('System.CurrentControl') != 'Yes':
+            xbmc.executebuiltin('Action(Up)')
+            xbmc.sleep(100)
+        xbmc.executebuiltin('Action(Select)')
+
     def _switchSkin(self, skin):
         if xbmc.getSkinDir() == skin:
             return
@@ -522,8 +552,10 @@ class XbmcBackup:
         try:
             xbmcgui.Dialog().notification(
                 utils.getString(30010),
-                'Choose Yes when Kodi asks whether to keep {}.'.format(skin),
-                xbmcgui.NOTIFICATION_INFO, 12000)
+                'Kodi is switching to {} to safely apply the restore; '
+                'it will switch back automatically.'.format(
+                    self._skinLabel(skin)),
+                xbmcgui.NOTIFICATION_INFO, 8000)
         except Exception:
             pass
         xbmc.executebuiltin('ActivateWindow(home)')
@@ -533,6 +565,7 @@ class XbmcBackup:
                 value=skin) is not True:
             raise RuntimeError('Kodi refused to change skins')
         confirmation_seen = False
+        confirmation_answered = False
         confirmed_reads = 0
         active_reads = 0
         for _attempt in range(96):
@@ -540,11 +573,16 @@ class XbmcBackup:
             if xbmc.getSkinDir() != skin:
                 active_reads = 0
                 confirmed_reads = 0
+                confirmation_seen = False
+                confirmation_answered = False
                 continue
             active_reads += 1
             if self._skinConfirmationActive():
                 confirmation_seen = True
                 confirmed_reads = 0
+                if not confirmation_answered:
+                    self._confirmSkinChange()
+                    confirmation_answered = True
             elif confirmation_seen:
                 confirmed_reads += 1
                 if confirmed_reads >= 4:

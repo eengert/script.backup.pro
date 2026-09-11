@@ -26,6 +26,7 @@ def install_kodi_stubs():
     xbmcgui.WindowXMLDialog = object
     xbmcgui.DialogProgress = object
     xbmcgui.DialogProgressBG = object
+    xbmcgui.NOTIFICATION_INFO = 1
     sys.modules.setdefault('xbmcgui', xbmcgui)
 
     class Addon:
@@ -867,6 +868,128 @@ class BackupBridgeTests(unittest.TestCase):
                 delattr(backup_module.xbmcgui, 'Dialog')
             else:
                 backup_module.xbmcgui.Dialog = original_dialog
+
+
+class SkinSwitchConfirmationTests(unittest.TestCase):
+    """_switchSkin() must answer Kodi's own 'keep this skin?' safety
+    dialog itself (see resources/lib/backup.py::_confirmSkinChange())
+    rather than depend on a human reacting to its countdown in time --
+    reported 2026-09-10: the dialog appeared and Kodi reverted before
+    the user got a usable chance to click Yes, leaving Backup Pro's own
+    restore transaction genuinely incomplete."""
+
+    def _instance(self):
+        instance = object.__new__(XbmcBackup)
+        instance.progressBar = type('Progress', (), {
+            'close': lambda self: None,
+            'create': lambda self, *_a, **_k: None,
+        })()
+        instance._skin_monitor = type('Monitor', (), {
+            'waitForAbort': lambda self, _seconds: False,
+        })()
+        return instance
+
+    def test_confirm_skin_change_navigates_up_when_not_already_on_yes(self):
+        calls = []
+        original_label = backup_module.xbmc.getInfoLabel
+        original_builtin = backup_module.xbmc.executebuiltin
+        original_sleep = backup_module.xbmc.sleep
+        backup_module.xbmc.getInfoLabel = lambda _name: 'No'
+        backup_module.xbmc.executebuiltin = lambda cmd: calls.append(cmd)
+        backup_module.xbmc.sleep = lambda _ms: None
+        try:
+            XbmcBackup._confirmSkinChange()
+        finally:
+            backup_module.xbmc.getInfoLabel = original_label
+            backup_module.xbmc.executebuiltin = original_builtin
+            backup_module.xbmc.sleep = original_sleep
+        self.assertEqual(calls, ['Action(Up)', 'Action(Select)'])
+
+    def test_confirm_skin_change_only_selects_when_already_on_yes(self):
+        calls = []
+        original_label = backup_module.xbmc.getInfoLabel
+        original_builtin = backup_module.xbmc.executebuiltin
+        backup_module.xbmc.getInfoLabel = lambda _name: 'Yes'
+        backup_module.xbmc.executebuiltin = lambda cmd: calls.append(cmd)
+        try:
+            XbmcBackup._confirmSkinChange()
+        finally:
+            backup_module.xbmc.getInfoLabel = original_label
+            backup_module.xbmc.executebuiltin = original_builtin
+        self.assertEqual(calls, ['Action(Select)'])
+
+    def test_switch_skin_confirms_the_dialog_exactly_once(self):
+        instance = self._instance()
+        original_skindir = backup_module.xbmc.getSkinDir
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        target = 'skin.arctic.fuse.3'
+        seen = {'n': 0}
+
+        def fake_getskindir():
+            seen['n'] += 1
+            return 'skin.estuary' if seen['n'] == 1 else target
+
+        backup_module.xbmc.getSkinDir = fake_getskindir
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'notification': lambda self, *_a, **_k: None})()
+        instance._skinRpc = lambda *_a, **_k: True
+        confirm_calls = []
+        instance._confirmSkinChange = lambda: confirm_calls.append('confirm')
+        # "active" for 3 confirmation-eligible reads, then gone for 4
+        # consecutive reads to satisfy the "kept" exit condition
+        active_sequence = iter([True, True, True, False, False, False, False])
+        instance._skinConfirmationActive = lambda: next(active_sequence, False)
+        original_progress_mode = backup_module.utils.getSettingInt
+        backup_module.utils.getSettingInt = lambda _name: 2  # NONE mode
+        try:
+            instance._switchSkin(target)
+        finally:
+            backup_module.xbmc.getSkinDir = original_skindir
+            backup_module.utils.getSettingInt = original_progress_mode
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+        # answered exactly once despite the dialog being seen 3 times -
+        # repeated presses could navigate past Yes on a second attempt
+        self.assertEqual(confirm_calls, ['confirm'])
+
+    def test_switch_skin_notification_uses_a_friendly_skin_name(self):
+        instance = self._instance()
+        original_skindir = backup_module.xbmc.getSkinDir
+        original_addon = backup_module.xbmcaddon.Addon
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        target = 'skin.arctic.fuse.3'
+        messages = []
+        seen = {'n': 0}
+
+        def fake_getskindir():
+            seen['n'] += 1
+            return 'skin.estuary' if seen['n'] == 1 else target
+
+        backup_module.xbmc.getSkinDir = fake_getskindir
+        backup_module.xbmcaddon.Addon = lambda _addon_id: type('A', (), {
+            'getAddonInfo': lambda self, name: (
+                'Arctic Fuse 3' if name == 'name' else '')})()
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'notification': lambda self, _title, message, *_a, **_k:
+                messages.append(message)})()
+        instance._skinRpc = lambda *_a, **_k: True
+        instance._skinConfirmationActive = lambda: False
+        original_progress_mode = backup_module.utils.getSettingInt
+        backup_module.utils.getSettingInt = lambda _name: 2  # NONE mode
+        try:
+            instance._switchSkin(target)
+        finally:
+            backup_module.xbmc.getSkinDir = original_skindir
+            backup_module.xbmcaddon.Addon = original_addon
+            backup_module.utils.getSettingInt = original_progress_mode
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+        self.assertTrue(any('Arctic Fuse 3' in m for m in messages))
+        self.assertFalse(any('Choose Yes' in m for m in messages))
 
 
 class StatusReportTests(unittest.TestCase):
