@@ -235,66 +235,55 @@ def inspect_pending_restore(profile_path, rollback_root, pending_path):
 
 
 def _verify_helper_sources(profile_path, expected, wait=None):
-    """Compare currently-applied helper files against the pending
-    restore's captured hashes, waiting for writes to actually settle
-    before judging them.
+    """Compare the pending restore's captured helper hashes against the
+    same paths' current content, waiting for rebuild_skin()'s writes to
+    settle before judging them.
 
-    rebuild_skin() itself rewrites these exact managed helper files as
-    part of its own normal menu/widget regeneration - its RunScript
-    completion signal can fire well before those writes are fully
-    flushed to disk (confirmed live repeatedly, 2026-09-10 and
-    2026-09-11: a restore that failed here with mismatched hashes
-    matched exactly, byte for byte, when re-checked a bit later with no
-    further action taken - a settling delay, not corrupted or missing
-    content). A fixed retry count tuned against one measured delay kept
-    proving insufficient against a longer one (5s, then 15s, both still
-    failed live).
+    Three earlier designs (all in this project's history, 2026-09-10/11)
+    were tried and live-disproven before this one: a fixed 5s retry, a
+    fixed 15s retry, and a "wait for two consecutive reads to agree"
+    design that declared victory on transitional content during a lull
+    between rebuild_skin()'s write bursts. Widening the fixed-retry bound
+    to 100s and then 300s *also* kept failing live - which was the clue
+    that the real bug was never about duration at all.
 
-    A "wait for two consecutive reads to agree, then judge once" design
-    was tried next and was itself proven wrong by direct instrumentation
-    on 2026-09-11: rebuild_skin()'s ReloadSkin() call makes AF3
-    re-initialize its Home window repeatedly (a live trace showed Home
-    re-initializing roughly every ~2s, each time re-invoking Skin
-    Variables), and between those bursts the files sit briefly quiet on
-    *transitional* content - internally self-consistent for a moment,
-    but not yet the final value. Two consecutive matching reads during
-    one of those lulls looks identical to genuine completion, so that
-    design kept declaring victory on the wrong content and failing
-    immediately instead of continuing to poll - it was measurably worse
-    than simply retrying, since it gave up the moment it saw *any*
-    stable-looking plateau rather than the *right* one.
+    Direct comparison on 2026-09-11 found it: `expected` is built at
+    backup time from exactly the helper files captured then (see
+    `build_pending_restore()`), but `read_current_managed_files()` walks
+    *every* currently-managed helper file, including ones rebuild_skin()
+    creates fresh as a normal side effect of a full rebuild (its
+    `buildviews` action can create a `-viewtypes.json` cache file that
+    simply did not exist yet at backup time on a freshly-provisioned
+    profile). Comparing the two dicts for exact equality meant an extra
+    key `expected` never had - not any content mismatch, not any timing
+    issue - made `actual == expected` structurally impossible to ever
+    satisfy, on any bound, however long. That is why widening the bound
+    three times in a row kept failing: there was nothing a longer wait
+    could fix.
 
-    The correct check is simpler than either prior attempt: the actual
-    success condition is "the content equals what the backup captured",
-    not "the content stopped changing" - so return the instant a read
-    matches `expected` rather than waiting for extra confirmation first.
-    Keep retrying on every mismatch (transitional or otherwise) up to a
-    generous bound. Still fails closed: a file that never reaches
-    `expected` within the bound raises, using whatever the last read was.
+    The fix: score `actual` only over `expected`'s own keys - the
+    question this function answers is "did the specific files the backup
+    captured come back with the content the backup captured", not "does
+    Kodi's current helper-file inventory exactly match the archived
+    one". Extra files rebuild_skin() legitimately creates are out of
+    scope. A path `expected` names but that never reappears still fails
+    the comparison (dict equality still requires every expected key to
+    be present with the matching hash), so this still fails closed on a
+    genuinely missing or wrong file - it just no longer fails closed on
+    an irrelevant extra one.
 
-    That eager-match logic was live-reproved correct (a failed run's
-    files matched `expected` exactly moments later, every time this was
-    checked), but the 100s bound from the previous commit still proved
-    insufficient live on 2026-09-11: the disposable validation profile
-    kept re-initializing its Home window roughly every ~2s for over two
-    minutes straight after a restore, each time re-invoking Skin
-    Variables. That is unusually persistent for what should be a
-    one-time (or few-time) rebuild settling, and may be specific to this
-    project's disposable, content-less test profile - AF3 widgets
-    retrying failed library/network lookups in a loop is a plausible
-    cause that would not occur on a real profile with real content - but
-    that suspicion is not yet confirmed, so the bound is widened again
-    rather than assumed unnecessary. Whoever next investigates this
-    should check whether a real (non-disposable) Kodi profile settles
-    materially faster; if so, the long bound here is just a safety net
-    that production restores are never expected to approach."""
-    attempts = 1200 if wait else 1
+    With the actual bug fixed, retrying is only for the same short,
+    already-documented settling window (rebuild_skin()'s completion
+    signal can fire before its writes are flushed) - not the multi-wave,
+    multi-minute churn that turned out to be this comparison bug
+    manifesting as "it never converges", not real settling time."""
+    attempts = 120 if wait else 1
     actual = None
     for attempt in range(attempts):
         files = read_current_managed_files(profile_path, AF3_ID)
         actual = {
             path: hashlib.sha256(data).hexdigest()
-            for path, data in files.items() if path != SETTINGS_PATH
+            for path, data in files.items() if path in expected
         }
         if actual == expected:
             return

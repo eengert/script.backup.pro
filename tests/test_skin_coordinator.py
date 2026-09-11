@@ -470,15 +470,11 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertIsNone(skin_state.read_pending_state(self.state))
 
     def test_finish_waits_for_writes_to_settle_not_a_fixed_retry_count(self):
-        # regression guard: a fixed retry count tuned against one
-        # measured settling delay (5s, then 15s) kept proving
-        # insufficient against a longer one, live, on 2026-09-11 -
-        # rebuild_skin()'s file writes don't finish on any single
-        # knowable schedule. Verification must wait for the files to
-        # actually stop changing (two consecutive reads agreeing), not
-        # assume any fixed number of retries is "long enough" -
-        # simulate a helper file rewritten several times before finally
-        # settling on the correct content.
+        # regression guard: rebuild_skin()'s writes can land in more than
+        # one step before settling on their final content - simulate a
+        # helper file rewritten several times before finally settling,
+        # and confirm verification keeps retrying through each
+        # intermediate value rather than judging too early.
         host = FakeHost()
         pending = self.stage(host)
         helper = next(iter(pending['helper_hashes']))
@@ -497,6 +493,38 @@ class SkinCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(AF3_ID, result['skin_id'])
         self.assertEqual([], remaining)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
+    def test_finish_ignores_helper_files_rebuild_creates_that_backup_never_captured(self):
+        # regression guard, root-caused 2026-09-11: three straight fixed-
+        # bound widenings (15s, 100s, 300s) all failed live even though
+        # the four captured helper files matched their expected hashes
+        # every single time this was checked directly. The real bug was
+        # never about timing: read_current_managed_files() walks every
+        # *currently* managed helper file, including a `-viewtypes.json`
+        # cache rebuild_skin()'s own buildviews action can create fresh
+        # on a profile that had none at backup time - `expected` (built
+        # from what backup actually captured) never has that key, so
+        # comparing the two dicts for exact equality could never
+        # succeed, on any bound, however long. Verification must score
+        # only the paths the backup actually captured, ignoring any
+        # extra managed file rebuild_skin() legitimately creates as a
+        # side effect.
+        host = FakeHost()
+        pending = self.stage(host)
+        self.assertNotIn(
+            'addon_data/script.skinvariables/skin.arctic.fuse.3-viewtypes.json',
+            pending['helper_hashes'])
+        viewtypes = (self.profile
+                     / 'addon_data/script.skinvariables'
+                     / 'skin.arctic.fuse.3-viewtypes.json')
+        viewtypes.parent.mkdir(parents=True, exist_ok=True)
+        viewtypes.write_bytes(b'{"created-by-rebuild": true}')
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
         self.assertIsNone(skin_state.read_pending_state(self.state))
 
     def test_finish_rejects_changed_helper_source_and_keeps_pending(self):
