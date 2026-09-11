@@ -66,6 +66,23 @@ class SkinAdapterTests(unittest.TestCase):
         self.assertEqual(['script-skinvariables-user-choice'],
                          [item['id'] for item in values])
 
+    def test_sibling_build_fingerprint_without_variables_segment_is_excluded(self):
+        # regression guard: script-skinviewtypes-hash (Skin Variables'
+        # view-type build fingerprint) reappears in settings.xml
+        # immediately after AF3 reactivates during a restore, just like
+        # script-skinvariables-images-hash already handled above - but
+        # it lacks the "-variables-" segment the original pattern
+        # required, so it slipped through and made
+        # verify_loaded_settings() see a live/staged mismatch that
+        # wasn't a real settings change (2026-09-10).
+        self.assertTrue(
+            skin_adapter.volatile_skin_setting('script-skinviewtypes-hash'))
+        self.assertTrue(skin_adapter.volatile_skin_setting(
+            'script-skinvariables-images-hash'))
+        self.assertFalse(skin_adapter.volatile_skin_setting(
+            'script-skinvariables-user-choice'))
+        self.assertFalse(skin_adapter.volatile_skin_setting('home.firstrun'))
+
     def test_collects_only_af3_managed_helper_json(self):
         skin = skin_adapter.AF3_ID
         managed = {

@@ -52,8 +52,23 @@ def validate_skin_id(skin_id):
 
 
 def volatile_skin_setting(setting_id):
-    """Exclude Skin Variables build fingerprints, not user preferences."""
-    return (setting_id.startswith('script-skinvariables-')
+    """Exclude Skin Variables build fingerprints, not user preferences.
+
+    Live restore testing 2026-09-10 found `script-skinviewtypes-hash`
+    (Skin Variables' view-type build fingerprint) reappearing in
+    settings.xml immediately after AF3 reactivates - the exact same
+    kind of self-written, session-local cache key as
+    `script-skinvariables-images-hash` (already excluded here), just
+    missing the `-variables-` segment this pattern required. Because it
+    slipped through, verify_loaded_settings() compared a staged
+    snapshot from before AF3 reloaded against a live settings.xml that
+    had since gained this one extra key, failed the exact-set
+    comparison, and reported the whole restore as incomplete even
+    though every real user setting matched. Broadened to
+    `script-skin*-hash` to catch this and any future sibling build
+    fingerprint Skin Variables writes the same way, without excluding
+    anything that looks like a real, user-authored setting."""
+    return (setting_id.startswith('script-skin')
             and setting_id.endswith('-hash'))
 
 
