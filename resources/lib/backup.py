@@ -71,6 +71,11 @@ class XbmcBackup:
     Backup = 0
     Restore = 1
 
+    # local-only marker recording the most recent successful backup's
+    # identity, for Status to read without ever listing the remote
+    # destination (see _recordLastBackup()/_lastBackupLabel())
+    LAST_BACKUP_FILE = 'last-backup.json'
+
     ZIP_TEMP_PATH = None
 
     # list of dirs for the "simple" file selection
@@ -869,6 +874,9 @@ class XbmcBackup:
         (label_key, detail) pairs for a caller to localize and display.
         """
         last_backup = {'known': False}
+        last_backup_label = self._lastBackupLabel()
+        if last_backup_label:
+            last_backup = {'known': True, 'label': last_backup_label}
 
         remote_configured = self.remoteConfigured()
         remote = {'configured': remote_configured}
@@ -1265,6 +1273,7 @@ class XbmcBackup:
                 self._reportBackupFailure(
                     'an old backup could not be removed during retention')
                 return False
+            self._recordLastBackup(artifact_path)
             xbmcgui.Dialog().ok(
                 utils.getString(30010), self._backupCompletionMessage())
             return True
@@ -1276,6 +1285,51 @@ class XbmcBackup:
         self._active_artifact = None
         self._reportBackupFailure()
         return False
+
+    def _recordLastBackup(self, artifact_path):
+        """Record a small local marker for buildStatusReport() to read.
+
+        Status must stay local-only and never list the remote
+        destination's contents (a Dropbox listing in particular would
+        risk a slow or blocking network call just to open the Status
+        screen) - so a successful backup's identity is recorded here,
+        once, at completion time, instead of being discovered later by
+        asking the remote what exists. Best-effort: a failure to write
+        this marker must never fail an otherwise-successful backup.
+        """
+        try:
+            name = os.path.basename(artifact_path.rstrip('/'))
+            if not name:
+                return
+            data_root = xbmcvfs.translatePath(utils.data_dir())
+            os.makedirs(data_root, exist_ok=True)
+            with open(os.path.join(data_root, self.LAST_BACKUP_FILE), 'w',
+                      encoding='utf-8') as handle:
+                json.dump({'name': name}, handle)
+        except Exception as error:
+            utils.log('Unable to record last backup marker: %s' % error,
+                      xbmc.LOGWARNING)
+
+    def _lastBackupLabel(self):
+        """Read back the marker _recordLastBackup() writes. Local-file
+        read only - safe to call from buildStatusReport()."""
+        try:
+            path = os.path.join(
+                xbmcvfs.translatePath(utils.data_dir()),
+                self.LAST_BACKUP_FILE)
+            if not os.path.isfile(path):
+                return None
+            with open(path, 'r', encoding='utf-8') as handle:
+                recorded = json.load(handle)
+            name = recorded.get('name', '')
+            if not name:
+                return None
+            base = name.split('.')[0]
+            return self._dateFormat(base)
+        except Exception as error:
+            utils.log('Unable to read last backup marker: %s' % error,
+                      xbmc.LOGWARNING)
+            return None
 
     def _reportBackupFailure(self, reason=None):
         """Show a persistent, actively-dismissed failure dialog instead

@@ -1272,6 +1272,46 @@ class StatusReportTests(unittest.TestCase):
         report = instance.buildStatusReport()
         self.assertIn(('remote_configured', '/mnt/backups/'), report)
 
+    def test_a_successful_backup_is_reflected_in_status(self):
+        # regression guard, 2026-09-11: buildStatusReport() hardcoded
+        # last_backup = {'known': False} unconditionally (Phase 8,
+        # commit cd64127) -- Status said "No backup history" even
+        # immediately after a genuinely successful, verified backup,
+        # which is exactly what a real user reported and could not
+        # distinguish from an actual failure. Status must stay
+        # local-only (no remote listing -- a Dropbox listing in
+        # particular would risk a slow network call just to open the
+        # screen), so a successful backup now records a small local
+        # marker at completion time for Status to read back cheaply.
+        with tempfile.TemporaryDirectory() as directory:
+            original_data_dir = backup_module.utils.data_dir
+            original_translate = backup_module.xbmcvfs.translatePath
+            backup_module.utils.data_dir = lambda: directory + '/'
+            backup_module.xbmcvfs.translatePath = lambda path: (
+                directory + '/' if path == 'special://profile/addon_data/'
+                or path == directory + '/' else path)
+            try:
+                instance = self._instance()
+                # nothing recorded yet
+                self.assertEqual(
+                    [key for key, _detail in instance.buildStatusReport()],
+                    ['last_backup_unknown', 'remote_not_configured',
+                     'recovery_clear', 'scheduler_disabled'])
+
+                instance._recordLastBackup('/backups/20260911162220/')
+                report = instance.buildStatusReport()
+            finally:
+                backup_module.utils.data_dir = original_data_dir
+                backup_module.xbmcvfs.translatePath = original_translate
+
+        keys = [key for key, _detail in report]
+        self.assertEqual(keys[0], 'last_backup_known')
+        # the FakeAddon stub's getRegionalTimestamp-driven _dateFormat()
+        # is exercised for real here (not stubbed), so just confirm a
+        # non-empty, genuinely-parsed label came back rather than a
+        # blank or raw placeholder.
+        self.assertTrue(report[0][1])
+
     def test_pending_recovery_is_surfaced_and_leads(self):
         instance = self._instance(recovery_kind='discard')
         report = instance.buildStatusReport()
