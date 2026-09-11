@@ -212,7 +212,19 @@ def status() -> dict[str, object]:
     return info
 
 
+_process: subprocess.Popen | None = None
+"""The Popen handle for a Kodi child this same process spawned, if any.
+Only meaningful within one Python process's lifetime (e.g. a single
+prepare_validation() call that launch()es more than once) - a fresh CLI
+invocation of `launch`/`stop` never sees a prior one's handle, which is
+fine: in that cross-process case the child gets reparented to launchd
+once its original launcher process exits, and launchd reaps it, so
+os.kill(pid, 0) correctly reports it as gone. See stop()'s docstring for
+why this variable exists at all."""
+
+
 def launch() -> None:
+    global _process
     verify_isolation()
     if status()["running"]:
         raise RuntimeError("disposable Kodi is already running")
@@ -221,18 +233,54 @@ def launch() -> None:
     proc = subprocess.Popen([str(KODI)], env=_env(), cwd=str(ROOT),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
+    _process = proc
     PID_FILE.write_text(f"{proc.pid}\n")
     time.sleep(1)
     if proc.poll() is not None:
         PID_FILE.unlink(missing_ok=True)
+        _process = None
         raise RuntimeError(f"Kodi exited during launch (status {proc.returncode})")
 
 
 def stop(timeout_seconds: float = 15.0) -> None:
+    """Stop the disposable Kodi instance, waiting up to timeout_seconds
+    for a clean exit. If this same Python process's own launch() started
+    it, wait() on that exact Popen handle to reap it directly - without
+    this, a Kodi process SIGTERM'd by its own still-running parent
+    becomes a zombie (os.kill(pid, 0) keeps succeeding on a zombie
+    regardless of who calls it, since the entry only leaves the process
+    table once its real parent reaps it or exits), so the polling loop
+    below would spin until timeout_seconds no matter how large that
+    value is - confirmed empirically 2026-09-10 when prepare_validation()
+    became the first caller to launch() Kodi more than once within a
+    single long-running process; raising the timeout from 15s to 90s
+    made no difference because the wait condition itself could never
+    become true. A separate CLI invocation of `stop` (the common case
+    everywhere else in this harness) has no such handle - Kodi was
+    reparented to launchd when its original launcher process already
+    exited, and launchd reaps it, so the plain os.kill(pid, 0) poll
+    below is correct and sufficient there."""
+    global _process
     info = status()
     if not info["running"]:
         return
-    os.kill(int(info["pid"]), signal.SIGTERM)
+    pid = int(info["pid"])
+    os.kill(pid, signal.SIGTERM)
+    if _process is not None and _process.pid == pid:
+        # We own this child: reap it directly rather than polling
+        # os.kill(pid, 0), which cannot distinguish "still running" from
+        # "exited but not yet reaped" (a zombie) - see the docstring
+        # above. There is no correct fallback poll once we know we own
+        # the process; either wait() succeeds or it genuinely hasn't
+        # exited within timeout_seconds.
+        try:
+            _process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                "Kodi did not stop safely; inspect it before retrying")
+        _process = None
+        PID_FILE.unlink(missing_ok=True)
+        return
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if not status()["running"]:

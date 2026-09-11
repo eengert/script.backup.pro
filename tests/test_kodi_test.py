@@ -1,4 +1,7 @@
 import importlib.util
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,6 +60,36 @@ class KodiHarnessTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 MODULE.reset()
         MODULE.PID_FILE = old
+
+    def test_stop_reaps_its_own_child_directly_avoiding_zombie_poll(self):
+        # regression guard: within a single long-running process (e.g.
+        # prepare_validation(), which launch()es Kodi more than once), a
+        # child this process spawned becomes a zombie once it exits
+        # unless something calls wait() on it - and os.kill(pid, 0)
+        # keeps succeeding on a zombie no matter who asks, so a plain
+        # poll-based stop() can never detect it as stopped, regardless
+        # of how large its timeout is (confirmed empirically 2026-09-10:
+        # raising the timeout from 15s to 90s made no difference).
+        # Uses a real short-lived child, not the actual Kodi binary, to
+        # prove stop() reaps it via the tracked Popen handle.
+        old_pid_file, old_process = MODULE.PID_FILE, MODULE._process
+        with tempfile.TemporaryDirectory(dir=MODULE.PROJECT) as d:
+            MODULE.PID_FILE = Path(d) / "kodi.pid"
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(5)"])
+            MODULE._process = proc
+            MODULE.PID_FILE.write_text(f"{proc.pid}\n")
+            try:
+                MODULE.stop(timeout_seconds=5.0)
+                self.assertIsNone(MODULE._process)
+                self.assertFalse(MODULE.PID_FILE.exists())
+                # actually reaped, not left a zombie: waitpid raises
+                # ChildProcessError once there is nothing left to reap
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(proc.pid, os.WNOHANG)
+            finally:
+                MODULE._process = old_process
+                MODULE.PID_FILE = old_pid_file
 
     def _retarget(self, root: Path):
         MODULE.ROOT = root
@@ -731,7 +764,7 @@ class KodiHarnessTests(unittest.TestCase):
             order.append(("enable_closure", seeds))
             return seeds
         MODULE.enable_closure = fake_enable_closure
-        MODULE.stop = lambda: order.append("stop")
+        MODULE.stop = lambda **kw: order.append(("stop", kw))
 
         def fake_jsonrpc(method, params=None, **kwargs):
             order.append(("jsonrpc", method, params))
@@ -777,6 +810,7 @@ class KodiHarnessTests(unittest.TestCase):
         # enable_closure only runs after the first wait_for_ready succeeds
         self.assertEqual(order[8], "wait_for_ready")
         self.assertEqual(order[9][0], "enable_closure")
+        self.assertEqual(order[10], ("stop", {}))
         self.assertEqual(report["active_skin"], MODULE.AF3_SKIN_ID)
         self.assertEqual(report["destination"], str(dest))
         self.assertEqual(report["enabled"], [MODULE.ADDON_ID, MODULE.AF3_SKIN_ID])
