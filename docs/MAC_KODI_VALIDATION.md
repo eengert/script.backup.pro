@@ -114,6 +114,39 @@ add-on's own declared default, exactly like a real, untouched install.
   status" below. Phase 9a (all 11 steps) is now complete; only Phase 9b's
   visual/appearance confirmation remains.
 
+## Phase 9b setup: one command (added 2026-09-10)
+
+Everything Phase 9a proved agent-executable is now one command. Run
+this, then do only the visual/appearance check below — no manual
+install/configure/enable steps, no dependency ids to enumerate:
+
+```sh
+./tools/kodi-test prepare-validation
+```
+
+This resets the disposable profile, installs Backup Pro and Arctic
+Fuse 3 with their full dependency closures, enables everything, and
+leaves Kodi running with AF3 active and the webserver up (port 8899,
+user `kodi-test`) — objectively verified before it reports success
+(fails closed with a `RuntimeError` otherwise, rather than reporting a
+false "ready"). Add `--destination <path>` to use a specific local
+backup destination; defaults to `<disposable-root>/backup-dest`.
+
+**Visual/appearance confirmation checklist** (the one remaining
+genuinely subjective Phase 9 item):
+
+1. Open Kodi's **Program Add-ons**, launch **Backup Pro** — confirm its
+   menu appears with no error dialog.
+2. Confirm Arctic Fuse 3's home screen actually *looks* correct (not
+   just that settings/hashes match) — layout, widgets, and appearance
+   render as expected.
+3. If validating a restore: trigger it from the UI, accept the prompts
+   as intended, and confirm the skin looks right afterward too.
+
+Any unexpected condition where safe recovery is uncertain, or anything
+that would require Apple TV/another real device, is still out of scope
+for self-directed validation — stop and report it rather than guessing.
+
 ## Phase 9 validation procedure and current status
 
 The Phase 9 validation scenario:
