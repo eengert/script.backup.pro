@@ -18,11 +18,15 @@ class SkinStateError(RuntimeError):
     pass
 
 
-def _parent_for(path):
+def _parent_for(path, allow_missing=False):
     target = Path(path)
     parent = target.parent
     try:
         info = parent.lstat()
+    except FileNotFoundError as error:
+        if allow_missing:
+            return target, None
+        raise SkinStateError('pending-state directory is unavailable') from error
     except OSError as error:
         raise SkinStateError('pending-state directory is unavailable') from error
     if parent.is_symlink() or not parent.is_dir():
@@ -94,7 +98,9 @@ def write_pending_state(path, record):
 
 def read_pending_state(path):
     """Return validated pending state, or None when no state exists."""
-    target, _parent = _parent_for(path)
+    target, parent = _parent_for(path, allow_missing=True)
+    if parent is None:
+        return None
     try:
         info = target.lstat()
     except FileNotFoundError:

@@ -40,6 +40,16 @@ class SkinStateTests(unittest.TestCase):
         skin_state.clear_pending_state(self.path, self.record)
         self.assertIsNone(skin_state.read_pending_state(self.path))
 
+    def test_missing_parent_is_no_pending_state_but_write_stays_closed(self):
+        path = Path(self.temporary.name) / 'not-created' / 'pending.json'
+
+        self.assertIsNone(skin_state.read_pending_state(path))
+        with self.assertRaisesRegex(
+                skin_state.SkinStateError,
+                'pending-state directory is unavailable'):
+            skin_state.write_pending_state(path, self.record)
+        self.assertFalse(path.parent.exists())
+
     def test_corrupt_or_changed_state_is_never_cleared(self):
         skin_state.write_pending_state(self.path, self.record)
         changed = advance_pending_restore(self.record, 'rebuild')
@@ -66,6 +76,22 @@ class SkinStateTests(unittest.TestCase):
         with self.assertRaises(skin_state.SkinStateError):
             skin_state.read_pending_state(self.path)
         self.assertEqual(b'untouched', outside.read_bytes())
+
+    def test_symlinked_parent_remains_unsafe_for_reads_and_writes(self):
+        outside = Path(self.temporary.name) / 'outside'
+        outside.mkdir()
+        linked_parent = Path(self.temporary.name) / 'linked-parent'
+        linked_parent.symlink_to(outside, target_is_directory=True)
+        path = linked_parent / 'pending.json'
+
+        with self.assertRaisesRegex(
+                skin_state.SkinStateError,
+                'pending-state directory is unsafe'):
+            skin_state.read_pending_state(path)
+        with self.assertRaisesRegex(
+                skin_state.SkinStateError,
+                'pending-state directory is unsafe'):
+            skin_state.write_pending_state(path, self.record)
 
 
 if __name__ == '__main__':
