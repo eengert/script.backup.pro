@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.16
+
+### Fixed
+
+- Backup no longer fails when two source paths differ only by case
+  (e.g. on case-insensitive filesystems) and resolve to the same
+  underlying file. Case-folded source-path collisions are now detected
+  before manifest construction; if all colliding files are
+  byte-identical, exactly one deterministic canonical entry is kept
+  (the lexicographically smallest normalized archive/source path), and
+  the excluded aliases are logged and counted in exclusion accounting.
+- Case-only collisions that differ in content still fail closed, with
+  every conflicting path reported, exactly as before.
+- Final manifest/archive validation is unchanged and still rejects
+  ambiguous path sets.
+
 ## Version 0.9.15
 
 ### Fixed
