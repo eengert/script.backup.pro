@@ -26,6 +26,7 @@ def install_kodi_stubs():
     xbmcgui.WindowXMLDialog = object
     xbmcgui.DialogProgress = object
     xbmcgui.DialogProgressBG = object
+    xbmcgui.NOTIFICATION_INFO = 1
     sys.modules.setdefault('xbmcgui', xbmcgui)
 
     class Addon:
@@ -124,6 +125,26 @@ class FakeRecoveryDialog:
 
     def notification(self, title, message, *_args):
         self.calls.append(('notification', title, message))
+
+
+class FakeProgress:
+    """A progress dialog stub that records close() calls, so a shared
+    events list can prove ordering against another recorder (e.g. the
+    success/failure Dialog().ok() calls) rather than just presence."""
+
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.closed = False
+
+    def checkCancel(self):
+        return False
+
+    def updateProgress(self, _percent, _message=None):
+        pass
+
+    def close(self):
+        self.closed = True
+        self.events.append('progress_closed')
 
 
 class RefusingDialog:
@@ -358,6 +379,40 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
             call[0] == 'ok' and 'Recovery data was preserved' in call[2]
             for call in dialog.calls))
 
+    def test_finish_closes_progress_dialog_before_rebuilding(self):
+        # AF3's rebuild mechanism activates Kodi windows; a modal progress
+        # dialog left open during that call blocks the activation and
+        # hangs the rebuild. The dialog must close before finish_skin_
+        # restore() runs, not merely afterward.
+        order = self.calls
+        backup_module.BackupProgressBar = lambda *_a, **_k: type(
+            'Progress', (), {
+                'create': lambda self, *_a, **_k: None,
+                'close': lambda self: order.append('progress_close'),
+            })()
+        dialog = FakeRecoveryDialog(select_return=0)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'finish_rebuild'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['progress_close', 'finish', 'progress_close'],
+                          self.calls)
+
+    def test_rollback_closes_progress_dialog_before_rebuilding(self):
+        order = self.calls
+        backup_module.BackupProgressBar = lambda *_a, **_k: type(
+            'Progress', (), {
+                'create': lambda self, *_a, **_k: None,
+                'close': lambda self: order.append('progress_close'),
+            })()
+        dialog = FakeRecoveryDialog(select_return=1)
+        backup_module.xbmcgui.Dialog = lambda: dialog
+        instance = self._instance()
+        self.current_action = {'action': 'resume_staging'}
+        self.assertFalse(instance.resolvePendingSkinRestore())
+        self.assertEqual(['progress_close', 'rollback', 'progress_close'],
+                          self.calls)
+
     def test_background_check_never_uses_dialogs_when_pending(self):
         backup_module.xbmcgui.Dialog = RefusingDialog
         instance = self._instance()
@@ -484,6 +539,86 @@ class BackupBridgeTests(unittest.TestCase):
             backup_module.xbmc.getInfoLabel = original_get_info
             backup_module.xbmcvfs.translatePath = original_translate
 
+    def test_skin_stage_path_is_unique_across_overlapping_captures(self):
+        # regression guard: the staging directory used to be a single
+        # fixed name (data_dir() + 'skin-staging'), rewritten via
+        # shutil.rmtree()-and-recreate on every capture. Two Backup Pro
+        # invocations overlapping in time (confirmed reproducible this
+        # session: rapid repeated triggers, or one invocation still
+        # finishing while another starts) could then have the second
+        # invocation's capture delete and rewrite the exact files the
+        # first invocation's own manifest-hash and archive-copy reads
+        # were about to see - producing an archived file whose bytes
+        # silently didn't match its own recorded manifest hash (the "AF3
+        # snapshot payload failed verification" restore failure reported
+        # 2026-09-10). A unique per-invocation path removes any
+        # possibility of two invocations sharing one staging directory.
+        original_data_dir = backup_module.utils.data_dir
+        original_capture = backup_module.capture_af3_snapshot
+        original_get_info = backup_module.xbmc.getInfoLabel
+        original_translate = backup_module.xbmcvfs.translatePath
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                addon_data = os.path.join(directory, 'addon')
+                profile = os.path.join(directory, 'profile')
+                os.makedirs(addon_data)
+                os.makedirs(profile)
+                backup_module.utils.data_dir = lambda: addon_data + '/'
+                backup_module.xbmcvfs.translatePath = lambda path: (
+                    profile + '/' if path == 'special://profile/' else path)
+                backup_module.xbmc.getInfoLabel = lambda name: {
+                    'System.FriendlyName': 'MacBook',
+                    'System.ProfileName': 'Master',
+                }.get(name, '')
+                marker_path = 'addon_data/skin.arctic.fuse.3/settings.xml'
+                backup_module.capture_af3_snapshot = lambda *_a, **_k: {
+                    'metadata': {'adapter_id': 'backup-pro.af3'},
+                    'files': {marker_path: b'<settings />'},
+                }
+
+                def make_instance():
+                    instance = object.__new__(XbmcBackup)
+                    instance._skin_stage_path = None
+                    instance._skin_snapshot_metadata = None
+                    instance._skin_managed_exclusions = []
+                    instance._automatic_exclusion_rules = None
+                    instance.remote_vfs = type(
+                        'Remote', (), {'root_path': '/backup/'})()
+                    instance._addBackupDir = lambda name, root, dirs: {
+                        'name': name, 'source': root, 'dest': '/backup/',
+                        'files': [], 'summary': {},
+                    }
+                    return instance
+
+                first = make_instance()
+                first._captureSkinConfigGroup()
+                first_stage = first._skin_stage_path
+                first_marker = os.path.join(first_stage, marker_path)
+                self.assertTrue(os.path.exists(first_marker))
+
+                # a second, "overlapping" invocation captures before the
+                # first one has cleaned up its own staging directory
+                second = make_instance()
+                second._captureSkinConfigGroup()
+                second_stage = second._skin_stage_path
+
+                self.assertNotEqual(first_stage, second_stage)
+                self.assertTrue(
+                    os.path.exists(first_marker),
+                    'the second capture must not disturb the first '
+                    "invocation's still-in-use staging directory")
+                with open(first_marker, 'rb') as handle:
+                    self.assertEqual(b'<settings />', handle.read())
+
+                first._cleanupSkinStage()
+                self.assertFalse(os.path.exists(first_stage))
+                self.assertTrue(os.path.exists(second_stage))
+        finally:
+            backup_module.utils.data_dir = original_data_dir
+            backup_module.capture_af3_snapshot = original_capture
+            backup_module.xbmc.getInfoLabel = original_get_info
+            backup_module.xbmcvfs.translatePath = original_translate
+
     def test_kodi_file_manager_uses_planner_and_keeps_progress_nonzero(self):
         root = '/empty'
         manager = FileManager(FakeVfs({root: ([], [])}, {}))
@@ -588,6 +723,181 @@ class BackupBridgeTests(unittest.TestCase):
         with self.assertRaises(ArchiveValidationError):
             instance._verifyFolderBackup('/backup')
 
+    def test_copy_failures_are_all_recorded_not_just_the_first(self):
+        # regression guard, 2026-09-11: a real-world backup (a large,
+        # diverse addon_data/addons tree) hit a copy failure Backup Pro
+        # reported only as a vague transient "not all files were
+        # copied" notification -- with no indication of which file, or
+        # how many. The prior code also only ever logged the *first*
+        # failure in a group (`if not wroteFile and result`), so even
+        # the log gave no visibility into a multi-file failure. Every
+        # failed file must be recorded so the failure dialog (see
+        # _backupFailureMessage()) can say exactly what went wrong.
+        instance = object.__new__(XbmcBackup)
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, _percent, _message=None: None,
+        })()
+        instance.transferSize = 100
+        instance.transferLeft = 100
+
+        class Dest:
+            root_path = '/backup/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+            def put(self, source_file, _dest_file):
+                # simulate a source file that vanished or became
+                # unreadable between listing and copy time -- the most
+                # plausible real-world cause on a large, actively-used
+                # profile (a background service touching its own cache).
+                return 'bad' not in source_file
+
+        class Source:
+            root_path = '/profile/'
+
+        files = [
+            {'file': '/profile/good1.txt', 'size': 1, 'is_dir': False},
+            {'file': '/profile/bad1.txt', 'size': 1, 'is_dir': False},
+            {'file': '/profile/good2.txt', 'size': 1, 'is_dir': False},
+            {'file': '/profile/bad2.txt', 'size': 1, 'is_dir': False},
+        ]
+
+        result = instance._copyFiles(files, Source(), Dest())
+
+        self.assertFalse(result)
+        self.assertEqual(
+            ['/profile/bad1.txt', '/profile/bad2.txt'],
+            instance._copy_failures)
+
+    def test_copy_files_progress_message_override_pins_percent_not_bytes(self):
+        # regression guard, 2026-09-12: a real 444MB compressed backup
+        # showed a frozen "444 MB remaining" progress dialog for the
+        # entire final copy-to-destination step, because that step
+        # copies exactly one (already-compressed) file and the ordinary
+        # per-file message is only computed once, before the single
+        # blocking copy runs, then never updated again. When a caller
+        # passes progress_message, _copyFiles must show that fixed,
+        # honest message and pin the percent rather than deriving a
+        # byte countdown from transferLeft that can never move.
+        instance = object.__new__(XbmcBackup)
+        updates = []
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, percent, message=None:
+                updates.append((percent, message)),
+        })()
+        instance.transferSize = 444 * 1024 * 1024
+        instance.transferLeft = instance.transferSize
+
+        class Dest:
+            root_path = '/backup/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+            def put(self, _source_file, _dest_file):
+                return True
+
+        class Source:
+            root_path = '/tmp/'
+
+        files = [{'file': '/tmp/20260912.zip', 'size': instance.transferSize,
+                  'is_dir': False}]
+
+        result = instance._copyFiles(
+            files, Source(), Dest(),
+            progress_message='Compressing backup into ZIP archive...')
+
+        self.assertTrue(result)
+        self.assertEqual(1, len(updates))
+        percent, message = updates[0]
+        self.assertEqual('Compressing backup into ZIP archive...', message)
+        self.assertNotIn('remaining', message)
+        # a fixed, non-zero percent (not derived from the untouched
+        # transferLeft, which would show 0%) -- the bar stays put
+        # instead of a fake countdown that never advances.
+        self.assertEqual(instance._INDETERMINATE_PERCENT, percent)
+        self.assertGreater(percent, 0)
+
+    def test_backup_failure_message_reports_reason_and_failed_files(self):
+        instance = object.__new__(XbmcBackup)
+        instance._failure_reason = 'backup verification failed: checksum mismatch'
+        instance._copy_failures = [
+            '/profile/addon_data/one.db',
+            '/profile/addon_data/two.db',
+        ]
+        message = instance._backupFailureMessage()
+        self.assertIn('30192', message)  # "Backup failed" header
+        self.assertIn('checksum mismatch', message)
+        self.assertIn('/profile/addon_data/one.db', message)
+        self.assertIn('/profile/addon_data/two.db', message)
+        self.assertIn('30193', message)  # "file(s) failed to copy"
+
+    def test_backup_failure_message_truncates_a_long_failure_list(self):
+        instance = object.__new__(XbmcBackup)
+        instance._failure_reason = None
+        instance._copy_failures = ['/profile/file%d.txt' % i for i in range(12)]
+        message = instance._backupFailureMessage()
+        for path in instance._copy_failures[:5]:
+            self.assertIn(path, message)
+        for path in instance._copy_failures[5:]:
+            self.assertNotIn(path, message)
+        self.assertIn('7', message)  # 12 - 5 = 7 more, not shown
+        self.assertIn('30194', message)  # "more not shown..."
+
+    def test_failed_backup_leaves_no_artifact_and_shows_persistent_dialog(self):
+        # a failed backup must never be discoverable as a restore point
+        # (per Task A: "failed/incomplete backups are not added to
+        # backup history and are not exposed as restore points"), and
+        # must be reported with a dialog the user actively dismisses,
+        # not a transient notification that could be missed or mistaken
+        # for a partial-success warning.
+        class Remote:
+            def __init__(self):
+                self.removed = []
+
+            def rmdir(self, path):
+                self.removed.append(path)
+                return True
+
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = Remote()
+        instance._copy_failures = ['/profile/addon_data/cache.db']
+        instance._failure_reason = None
+        events = []
+        instance.progressBar = FakeProgress(events)
+        dialogs = []
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, title, message: events.append('dialog_shown') or dialogs.append(
+                (title, message)) or True})()
+        try:
+            result = instance._finalizeBackup(
+                False, '/backup/', compressed=False)
+        finally:
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+
+        self.assertFalse(result)
+        self.assertEqual(['/backup/'], instance.remote_vfs.removed)
+        self.assertEqual(1, len(dialogs))
+        self.assertIn('/profile/addon_data/cache.db', dialogs[0][1])
+        self.assertIn('30192', dialogs[0][1])
+        # the progress dialog must be closed before the failure dialog is
+        # shown, not left open underneath it.
+        self.assertTrue(instance.progressBar.closed)
+        self.assertEqual(['progress_closed', 'dialog_shown'], events)
+
     def test_compressed_readback_requires_exact_remote_copy(self):
         instance = object.__new__(XbmcBackup)
         instance.remote_vfs = object()
@@ -618,10 +928,12 @@ class BackupBridgeTests(unittest.TestCase):
 
         instance = object.__new__(XbmcBackup)
         instance.remote_vfs = Remote()
+        instance.progressBar = FakeProgress()
         rotations = []
         instance._rotateBackups = lambda: rotations.append(True)
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = lambda _message: None
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, _title, _message: True})()
         try:
             self.assertFalse(instance._finalizeBackup(
                 False, '/backup/', compressed=False))
@@ -647,7 +959,10 @@ class BackupBridgeTests(unittest.TestCase):
                 [('directory', '/backup/'), ('file', '/backup.zip')],
                 instance.remote_vfs.removed)
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
     def test_finalize_backup_notifies_a_clear_completion_summary(self):
         class Remote:
@@ -671,25 +986,42 @@ class BackupBridgeTests(unittest.TestCase):
             ],
         }
         instance._skin_snapshot_metadata = {'appearance': {}}
-        notifications = []
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = notifications.append
+        events = []
+        instance.progressBar = FakeProgress(events)
+        dialogs = []
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, title, message: events.append('dialog_shown') or dialogs.append(
+                (title, message)) or True})()
         try:
             self.assertTrue(instance._finalizeBackup(
                 True, '/backup/', compressed=False))
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
-        self.assertEqual(1, len(notifications))
-        message = notifications[0]
+        # a persistent dialog the user must dismiss, not a transient
+        # notification that can be missed -- consistent with the recent
+        # restore-success treatment.
+        self.assertEqual(1, len(dialogs))
+        message = dialogs[0][1]
         self.assertIn('42', message)
         self.assertIn('3', message)
+        # the progress dialog must be closed before success is shown, not
+        # left open underneath it (regression guard, 2026-09-12: Eric saw
+        # a stale compression progress dialog reappear after dismissing
+        # the success dialog on a real 444MB compressed backup).
+        self.assertTrue(instance.progressBar.closed)
+        self.assertEqual(['progress_closed', 'dialog_shown'], events)
         # the FakeAddon stub's getLocalizedString() returns the numeric
         # string id rather than real English text (see install_kodi_stubs
         # in this file), so assert on the ids these getString() calls
         # resolve to rather than their real-world English copy.
         self.assertIn('30171', message)  # TMDb Helper cache excluded
         self.assertIn('30172', message)  # AF3 configuration included
+        self.assertIn('30195', message)  # explicitly valid/usable
 
     def test_finalize_backup_summary_omits_optional_parts_when_absent(self):
         class Remote:
@@ -704,16 +1036,22 @@ class BackupBridgeTests(unittest.TestCase):
         instance._rotateBackups = lambda: True
         instance.backup_plan = {'file_count': 5, 'total_kib': 10}
         instance._skin_snapshot_metadata = None
-        notifications = []
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = notifications.append
+        instance.progressBar = FakeProgress()
+        dialogs = []
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, title, message: dialogs.append(
+                (title, message)) or True})()
         try:
             self.assertTrue(instance._finalizeBackup(
                 True, '/backup/', compressed=False))
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
-        message = notifications[0]
+        message = dialogs[0][1]
         self.assertNotIn('30171', message)
         self.assertNotIn('30172', message)
         self.assertNotIn('30170', message)
@@ -723,6 +1061,7 @@ class BackupBridgeTests(unittest.TestCase):
         instance._vfs_closed = False
         instance._active_artifact = '/fresh-backup/'
         instance._active_artifact_compressed = False
+        instance.progressBar = FakeProgress()
         closed = []
         removed = []
         instance.remote_vfs = type('Remote', (), {
@@ -738,14 +1077,18 @@ class BackupBridgeTests(unittest.TestCase):
 
         instance._runBackup = fail
         instance._closeVFS = close
-        original_notification = backup_module.utils.showNotification
-        backup_module.utils.showNotification = lambda _message: None
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'ok': lambda self, _title, _message: True})()
         try:
             self.assertFalse(instance.backup())
             self.assertEqual([True], closed)
             self.assertEqual(['/fresh-backup/'], removed)
         finally:
-            backup_module.utils.showNotification = original_notification
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
 
     def test_restore_wrapper_always_closes_after_failure(self):
         instance = object.__new__(XbmcBackup)
@@ -776,6 +1119,8 @@ class BackupBridgeTests(unittest.TestCase):
             def notification(self, title, message, *_args):
                 messages.append(('notification', title, message))
 
+        order = []
+
         class Progress:
             def checkCancel(self):
                 return False
@@ -784,7 +1129,15 @@ class BackupBridgeTests(unittest.TestCase):
                 pass
 
             def close(self):
-                pass
+                order.append('progress_close')
+
+        class OrderedFakeHost(FakeHost):
+            def _event(self, name, *values):
+                order.append('host:' + name)
+                return super(OrderedFakeHost, self)._event(name, *values)
+
+        def make_host():
+            return OrderedFakeHost()
 
         try:
             with tempfile.TemporaryDirectory() as directory:
@@ -801,13 +1154,44 @@ class BackupBridgeTests(unittest.TestCase):
                 instance.progressBar = Progress()
                 instance._readRestoreBytes = lambda path: files[
                     path.split('/', 1)[1]]
-                instance._makeSkinHost = FakeHost
+                instance._makeSkinHost = make_host
 
                 self.assertTrue(instance._restoreSkinConfig(manifest))
                 self.assertFalse(os.path.exists(os.path.join(
                     data, 'pending-skin-restore.json')))
-                self.assertTrue(any(item[0] == 'notification'
-                                    for item in messages))
+                # The final result must be a persistent dialog the user
+                # has to dismiss, not a transient toast that can be
+                # missed -- confirm the toast path was actually
+                # replaced, not just supplemented.
+                self.assertTrue(any(
+                    item[0] == 'ok' and 'Restored and verified' in item[2]
+                    for item in messages))
+                self.assertFalse(any(
+                    item[0] == 'notification'
+                    and 'Restored and verified' in item[2]
+                    for item in messages))
+                # The pre-restore confirmation must explain the
+                # temporary default-skin switch, since this whole
+                # method only runs for skin_config restores.
+                self.assertTrue(any(
+                    item[0] == 'yesno'
+                    and 'briefly switch to its default skin' in item[2]
+                    for item in messages))
+                # _confirmSkinChange() already answers Kodi's native
+                # skin-change dialog automatically -- the user is never
+                # actually asked, so this staged-files dialog must not
+                # tell them to answer it themselves.
+                self.assertFalse(any(
+                    item[0] == 'ok' and 'Choose Yes' in item[2]
+                    for item in messages))
+                # The progress dialog must close before finish_skin_
+                # restore() activates AF3 (only it, not staging, calls
+                # activate_skin) -- a modal dialog left open blocks the
+                # window activation AF3's rebuild needs and hangs it.
+                self.assertIn('progress_close', order)
+                self.assertIn('host:activate_skin', order)
+                self.assertLess(order.index('progress_close'),
+                                 order.index('host:activate_skin'))
         finally:
             backup_module.utils.data_dir = original_data_dir
             backup_module.xbmcvfs.translatePath = original_translate
@@ -815,6 +1199,272 @@ class BackupBridgeTests(unittest.TestCase):
                 delattr(backup_module.xbmcgui, 'Dialog')
             else:
                 backup_module.xbmcgui.Dialog = original_dialog
+
+
+class SkinSwitchConfirmationTests(unittest.TestCase):
+    """_switchSkin() must answer Kodi's own 'keep this skin?' safety
+    dialog itself (see resources/lib/backup.py::_confirmSkinChange())
+    rather than depend on a human reacting to its countdown in time --
+    reported 2026-09-10: the dialog appeared and Kodi reverted before
+    the user got a usable chance to click Yes, leaving Backup Pro's own
+    restore transaction genuinely incomplete."""
+
+    def _instance(self):
+        instance = object.__new__(XbmcBackup)
+        instance.progressBar = type('Progress', (), {
+            'close': lambda self: None,
+            'create': lambda self, *_a, **_k: None,
+        })()
+        instance._skin_monitor = type('Monitor', (), {
+            'waitForAbort': lambda self, _seconds: False,
+        })()
+        return instance
+
+    def test_confirm_skin_change_sends_deterministic_yes_click(self):
+        # regression guard: an earlier version navigated focus with
+        # Action(Up) before selecting, assuming a button layout proven
+        # only for AF3's own custom yesno dialog. Live testing found
+        # this dialog renders using whichever skin is *currently*
+        # active when it appears - Estuary during the temporary
+        # ensure_inactive() switch, a completely different layout where
+        # Action(Up) did nothing and the dialog was left on "No".
+        # SendClick(11) is Kodi's own standard "Yes" control id for
+        # this dialog, which every skin's yesno template (including
+        # AF3's own) binds its visual Yes button to - no navigation or
+        # skin-topology assumption needed at all.
+        calls = []
+        original_builtin = backup_module.xbmc.executebuiltin
+        backup_module.xbmc.executebuiltin = lambda cmd: calls.append(cmd)
+        try:
+            XbmcBackup._confirmSkinChange()
+        finally:
+            backup_module.xbmc.executebuiltin = original_builtin
+        self.assertEqual(calls, ['SendClick(11)'])
+
+    def test_switch_skin_confirms_the_dialog_exactly_once(self):
+        instance = self._instance()
+        original_skindir = backup_module.xbmc.getSkinDir
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        target = 'skin.arctic.fuse.3'
+        seen = {'n': 0}
+
+        def fake_getskindir():
+            seen['n'] += 1
+            return 'skin.estuary' if seen['n'] == 1 else target
+
+        backup_module.xbmc.getSkinDir = fake_getskindir
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'notification': lambda self, *_a, **_k: None})()
+        instance._skinRpc = lambda *_a, **_k: True
+        confirm_calls = []
+        instance._confirmSkinChange = lambda: confirm_calls.append('confirm')
+        # "active" for 3 confirmation-eligible reads, then gone for 4
+        # consecutive reads to satisfy the "kept" exit condition
+        active_sequence = iter([True, True, True, False, False, False, False])
+        instance._skinConfirmationActive = lambda: next(active_sequence, False)
+        original_progress_mode = backup_module.utils.getSettingInt
+        backup_module.utils.getSettingInt = lambda _name: 2  # NONE mode
+        try:
+            instance._switchSkin(target)
+        finally:
+            backup_module.xbmc.getSkinDir = original_skindir
+            backup_module.utils.getSettingInt = original_progress_mode
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+        # answered exactly once despite the dialog being seen 3 times -
+        # repeated presses could navigate past Yes on a second attempt
+        self.assertEqual(confirm_calls, ['confirm'])
+
+    def test_switch_skin_notification_uses_a_friendly_skin_name(self):
+        instance = self._instance()
+        original_skindir = backup_module.xbmc.getSkinDir
+        original_addon = backup_module.xbmcaddon.Addon
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        target = 'skin.arctic.fuse.3'
+        messages = []
+        seen = {'n': 0}
+
+        def fake_getskindir():
+            seen['n'] += 1
+            return 'skin.estuary' if seen['n'] == 1 else target
+
+        backup_module.xbmc.getSkinDir = fake_getskindir
+        backup_module.xbmcaddon.Addon = lambda _addon_id: type('A', (), {
+            'getAddonInfo': lambda self, name: (
+                'Arctic Fuse 3' if name == 'name' else '')})()
+        backup_module.xbmcgui.Dialog = lambda: type('D', (), {
+            'notification': lambda self, _title, message, *_a, **_k:
+                messages.append(message)})()
+        instance._skinRpc = lambda *_a, **_k: True
+        instance._skinConfirmationActive = lambda: False
+        original_progress_mode = backup_module.utils.getSettingInt
+        backup_module.utils.getSettingInt = lambda _name: 2  # NONE mode
+        try:
+            instance._switchSkin(target)
+        finally:
+            backup_module.xbmc.getSkinDir = original_skindir
+            backup_module.xbmcaddon.Addon = original_addon
+            backup_module.utils.getSettingInt = original_progress_mode
+            if original_dialog is None:
+                delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+        self.assertTrue(any('Arctic Fuse 3' in m for m in messages))
+        self.assertFalse(any('Choose Yes' in m for m in messages))
+
+
+class StatusReportTests(unittest.TestCase):
+    """Exercises XbmcBackup.buildStatusReport()'s Kodi-side wiring: it
+    must stay read-only, local-only (no remote listing, no network probe)
+    and delegate the actual formatting to status.describe_status()."""
+
+    def _instance(self, remote_configured=False, recovery_kind='none',
+                  remote_selection='0', remote_base_path=''):
+        instance = object.__new__(XbmcBackup)
+        instance.remoteConfigured = lambda: remote_configured
+        instance.inspectSkinRecovery = lambda: {'kind': recovery_kind}
+        instance.remote_base_path = remote_base_path
+        self._remote_selection = remote_selection
+        return instance
+
+    def setUp(self):
+        self._original_get_setting = backup_module.utils.getSetting
+        self._original_get_setting_bool = backup_module.utils.getSettingBool
+        self._remote_selection = '0'
+        backup_module.utils.getSetting = lambda name: (
+            self._remote_selection if name == 'remote_selection' else '')
+        backup_module.utils.getSettingBool = lambda _name: False
+
+    def tearDown(self):
+        backup_module.utils.getSetting = self._original_get_setting
+        backup_module.utils.getSettingBool = self._original_get_setting_bool
+
+    def test_no_destination_no_recovery_no_scheduler(self):
+        instance = self._instance()
+        report = instance.buildStatusReport()
+        self.assertEqual(
+            [key for key, _detail in report],
+            ['last_backup_unknown', 'remote_not_configured',
+             'recovery_clear', 'scheduler_disabled'])
+
+    def test_dropbox_destination_uses_its_localized_name(self):
+        instance = self._instance(
+            remote_configured=True, remote_selection='2')
+        report = instance.buildStatusReport()
+        self.assertIn(('remote_configured', '30027'), report)
+
+    def test_path_destination_shows_the_configured_path(self):
+        instance = self._instance(
+            remote_configured=True, remote_selection='0',
+            remote_base_path='/mnt/backups/')
+        report = instance.buildStatusReport()
+        self.assertIn(('remote_configured', '/mnt/backups/'), report)
+
+    def test_a_successful_backup_is_reflected_in_status(self):
+        # regression guard, 2026-09-11: buildStatusReport() hardcoded
+        # last_backup = {'known': False} unconditionally (Phase 8,
+        # commit cd64127) -- Status said "No backup history" even
+        # immediately after a genuinely successful, verified backup,
+        # which is exactly what a real user reported and could not
+        # distinguish from an actual failure. Status must stay
+        # local-only (no remote listing -- a Dropbox listing in
+        # particular would risk a slow network call just to open the
+        # screen), so a successful backup now records a small local
+        # marker at completion time for Status to read back cheaply.
+        with tempfile.TemporaryDirectory() as directory:
+            original_data_dir = backup_module.utils.data_dir
+            original_translate = backup_module.xbmcvfs.translatePath
+            backup_module.utils.data_dir = lambda: directory + '/'
+            backup_module.xbmcvfs.translatePath = lambda path: (
+                directory + '/' if path == 'special://profile/addon_data/'
+                or path == directory + '/' else path)
+            try:
+                instance = self._instance()
+                # nothing recorded yet
+                self.assertEqual(
+                    [key for key, _detail in instance.buildStatusReport()],
+                    ['last_backup_unknown', 'remote_not_configured',
+                     'recovery_clear', 'scheduler_disabled'])
+
+                instance._recordLastBackup('/backups/20260911162220/')
+                report = instance.buildStatusReport()
+            finally:
+                backup_module.utils.data_dir = original_data_dir
+                backup_module.xbmcvfs.translatePath = original_translate
+
+        keys = [key for key, _detail in report]
+        self.assertEqual(keys[0], 'last_backup_known')
+        # the FakeAddon stub's getRegionalTimestamp-driven _dateFormat()
+        # is exercised for real here (not stubbed), so just confirm a
+        # non-empty, genuinely-parsed label came back rather than a
+        # blank or raw placeholder.
+        self.assertTrue(report[0][1])
+
+    def test_pending_recovery_is_surfaced_and_leads(self):
+        instance = self._instance(recovery_kind='discard')
+        report = instance.buildStatusReport()
+        self.assertEqual(report[0], ('recovery_pending', None))
+
+    def test_scheduler_disabled_never_touches_next_run_file(self):
+        original_exists = getattr(backup_module.xbmcvfs, 'exists', None)
+
+        def refuse_exists(_path):
+            raise AssertionError(
+                'scheduler is disabled; next_run.txt must not be read')
+
+        backup_module.xbmcvfs.exists = refuse_exists
+        try:
+            instance = self._instance()
+            report = instance.buildStatusReport()
+            self.assertIn(('scheduler_disabled', None), report)
+        finally:
+            if original_exists is None:
+                delattr(backup_module.xbmcvfs, 'exists')
+            else:
+                backup_module.xbmcvfs.exists = original_exists
+
+    def test_scheduler_enabled_reads_next_run_from_local_file(self):
+        class TextFile:
+            def __init__(self, path, mode='r'):
+                self.handle = open(path, mode, encoding='utf-8')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.handle.close()
+
+            def read(self):
+                return self.handle.read()
+
+        original_data_dir = backup_module.utils.data_dir
+        original_file = getattr(backup_module.xbmcvfs, 'File', None)
+        original_exists = getattr(backup_module.xbmcvfs, 'exists', None)
+        backup_module.utils.getSettingBool = lambda name: (
+            name == 'enable_scheduler')
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                backup_module.utils.data_dir = lambda: directory + '/'
+                backup_module.xbmcvfs.File = TextFile
+                backup_module.xbmcvfs.exists = os.path.exists
+                with open(os.path.join(directory, 'next_run.txt'), 'w',
+                          encoding='utf-8') as handle:
+                    handle.write('4102444800')  # 2100-01-01, well into the future
+
+                instance = self._instance()
+                report = instance.buildStatusReport()
+                keys = [key for key, _detail in report]
+                self.assertIn('scheduler_enabled_next', keys)
+        finally:
+            backup_module.utils.data_dir = original_data_dir
+            for name, value in (
+                    ('File', original_file), ('exists', original_exists)):
+                if value is None:
+                    delattr(backup_module.xbmcvfs, name)
+                else:
+                    setattr(backup_module.xbmcvfs, name, value)
 
 
 if __name__ == '__main__':

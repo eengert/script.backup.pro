@@ -7,9 +7,6 @@ from . import utils as utils
 from resources.lib.croniter import croniter
 from resources.lib.backup import XbmcBackup
 
-UPGRADE_INT = 2  # to keep track of any upgrade notifications
-
-
 class BackupScheduler:
     monitor = None
     enabled = False
@@ -21,11 +18,6 @@ class BackupScheduler:
         self.monitor = UpdateMonitor(update_method=self.settingsChanged)
         self.enabled = utils.getSettingBool("enable_scheduler")
         self.next_run_path = xbmcvfs.translatePath(utils.data_dir()) + 'next_run.txt'
-
-        # display upgrade messages if they exist
-        if(utils.getSettingInt('upgrade_notes') < UPGRADE_INT):
-            xbmcgui.Dialog().ok(utils.getString(30010), utils.getString(30132))
-            utils.setSetting('upgrade_notes', str(UPGRADE_INT))
 
         # check if a backup should be resumed
         resumeRestore = self._resumeCheck()

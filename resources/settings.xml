@@ -9,7 +9,45 @@
           <default>false</default>
           <control type="toggle" />
         </setting>
-        <!-- zip folder staging path -->
+        <!-- Internal-only local staging scratch path used while building a
+             compressed archive before it is copied to the one configured
+             backup destination (see "Backup Path" below) - never a second
+             destination, so this must never be shown in the UI. Retained
+             (not removed) so any already-persisted value keeps working
+             exactly as before for existing users; the default
+             ("special://temp") is correct for virtually everyone.
+
+             Two prior attempts at hiding this were each live-disproven on
+             real Kodi before this one:
+             (1) 0.9.12: <dependencies><dependency
+             type="visible">false</dependency></dependencies> with no
+             `setting` attribute - a bare literal isn't a form of
+             visibility condition Kodi's dependency evaluator recognizes
+             (those reference *another setting's* current value), so it
+             was silently ignored and the field stayed visible.
+             (2) a same-day follow-up: removing <control> entirely so the
+             setting would never render per Kodi's own settings.xml
+             documentation - live-testing immediately surfaced
+             "CSettingGroup: unable to read setting" / "CSettingsManager:
+             requested setting (zip_temp_path) was not found" in kodi.log,
+             and an actual compressed backup failed outright: without a
+             <control>, this Kodi version doesn't just skip rendering it,
+             it never registers the setting at all, so getSetting() could
+             no longer read it back - breaking exactly the internal
+             staging behavior this setting exists for.
+
+             This one keeps the full, original, known-working <control>/
+             <level>/<label>/<help> block (so the setting registers and
+             reads back exactly as it always has) and reuses only the
+             already-proven dependency form (a real `setting` reference,
+             not a bare literal) - just stacked as two dependencies on the
+             same boolean setting with contradictory required values.
+             compress_backups cannot be true AND false at once, so this
+             AND condition can never be satisfied, hiding the field
+             unconditionally without needing any new, unverified
+             mechanism. Live-confirmed both effects hold together: the
+             field is absent from the settings UI, and a real compressed
+             backup still succeeds. -->
         <setting id="zip_temp_path" type="string" label="30152" help="30153">
 	        <level>3</level>
 	          <default>special://temp</default>
@@ -18,6 +56,7 @@
 	          </constraints>
             <dependencies>
               <dependency type="visible" setting="compress_backups">true</dependency>
+              <dependency type="visible" setting="compress_backups">false</dependency>
             </dependencies>
 	          <control type="edit" format="string">
 		          <heading>30152</heading>
@@ -68,15 +107,6 @@
           <level>3</level>
           <default>false</default>
           <control type="toggle" />
-        </setting>
-        <!-- upgrade notes not visible to users -->
-        <setting id="upgrade_notes" type="integer" label="upgrade_notes" help="">
-          <level>4</level>
-          <default>1</default>
-          <visible>false</visible>
-          <control type="edit" format="integer">
-            <heading>upgrade_notes</heading>
-          </control>
         </setting>
       </group>
     </category>

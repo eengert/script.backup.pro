@@ -284,6 +284,23 @@ class HashTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(b'abc').hexdigest(), digest)
         self.assertEqual(3, size)
 
+    def test_hashes_bytearray_chunks(self):
+        # regression guard: xbmcvfs.File.read() returns bytearray on at
+        # least one real Kodi 21.1 build (confirmed empirically against
+        # a live disposable-profile backup on 2026-09-10 - see
+        # docs/MAC_KODI_VALIDATION.md). bytearray is not an instance of
+        # bytes, so it fell through to `.encode('utf-8')`, which
+        # bytearray does not have, crashing every real backup's manifest
+        # creation on that build.
+        chunks = [bytearray(b'ab'), bytearray(b'c'), bytearray(b'')]
+
+        def read_chunk(_size):
+            return chunks.pop(0)
+
+        digest, size = sha256_reader(read_chunk, chunk_size=2)
+        self.assertEqual(hashlib.sha256(b'abc').hexdigest(), digest)
+        self.assertEqual(3, size)
+
     def test_hashing_honors_cancellation_between_chunks(self):
         calls = []
 

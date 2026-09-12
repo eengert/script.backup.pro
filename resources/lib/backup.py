@@ -7,6 +7,7 @@ import xbmcaddon
 import xbmcvfs
 import os.path
 import shutil
+import uuid
 from . import utils as utils
 from datetime import datetime
 from . vfs import XBMCFileSystem, DropboxFileSystem, ZipFileSystem
@@ -29,6 +30,7 @@ from resources.lib.planning import (
     summarize_file_groups,
     tmdb_helper_cache_exclusions,
 )
+from resources.lib.status import describe_status
 from resources.lib.skin_adapter import (
     AF3_ID,
     APPEARANCE_SETTINGS,
@@ -69,6 +71,11 @@ class XbmcBackup:
     Backup = 0
     Restore = 1
 
+    # local-only marker recording the most recent successful backup's
+    # identity, for Status to read without ever listing the remote
+    # destination (see _recordLastBackup()/_lastBackupLabel())
+    LAST_BACKUP_FILE = 'last-backup.json'
+
     ZIP_TEMP_PATH = None
 
     # list of dirs for the "simple" file selection
@@ -106,6 +113,8 @@ class XbmcBackup:
         self._skin_snapshot_metadata = None
         self._skin_managed_exclusions = []
         self._skin_monitor = xbmc.Monitor()
+        self._copy_failures = []
+        self._failure_reason = None
 
         self.configureRemote()
         utils.log(utils.getString(30046))
@@ -172,7 +181,7 @@ class XbmcBackup:
         except Exception as error:
             utils.log('Backup failed: %s' % error, xbmc.LOGWARNING)
             self._discardActiveArtifact()
-            utils.showNotification(utils.getString(30092))
+            self._reportBackupFailure(str(error))
             return False
         finally:
             self._cleanupSkinStage()
@@ -180,6 +189,8 @@ class XbmcBackup:
                 self._closeVFS()
 
     def _runBackup(self, progressOverride=False):
+        self._copy_failures = []
+        self._failure_reason = None
         shouldContinue = self._setupVFS(self.Backup, progressOverride)
 
         if(shouldContinue):
@@ -190,13 +201,17 @@ class XbmcBackup:
                 if self.remote_vfs.exists(self.remote_vfs.root_path):
                     utils.log('Backup target already exists: ' +
                               self.remote_vfs.root_path, xbmc.LOGWARNING)
-                    utils.showNotification(utils.getString(30092))
+                    self._reportBackupFailure(
+                        'the backup destination already exists: '
+                        + self.remote_vfs.root_path)
                     self._closeVFS()
                     return False
                 if not self.remote_vfs.mkdir(self.remote_vfs.root_path):
                     utils.log('Unable to create backup target: ' +
                               self.remote_vfs.root_path, xbmc.LOGWARNING)
-                    utils.showNotification(utils.getString(30092))
+                    self._reportBackupFailure(
+                        'could not create the backup destination: '
+                        + self.remote_vfs.root_path)
                     self._closeVFS()
                     return False
                 self._active_artifact = self.remote_vfs.root_path
@@ -212,10 +227,12 @@ class XbmcBackup:
                 utils.log('Unable to create Backup Pro manifest: %s' % error,
                           xbmc.LOGWARNING)
                 writeCheck = False
+                self._failure_reason = (
+                    'could not create the backup manifest: %s' % error)
 
             if(not writeCheck):
                 if isinstance(self.remote_vfs, ZipFileSystem):
-                    utils.showNotification(utils.getString(30092))
+                    self._reportBackupFailure()
                 else:
                     self._finalizeBackup(
                         False, self.remote_vfs.root_path, compressed=False)
@@ -245,6 +262,18 @@ class XbmcBackup:
             if(compressing):
                 fileManager = FileManager(self.xbmc_vfs)
 
+                # from here on (finalizing the ZIP and copying it to the
+                # real destination) there is no reliable, cheap way to
+                # report incremental byte progress - the prior per-file
+                # "X remaining" wording either went stale (during verify)
+                # or was pinned at the full archive size for the entire,
+                # single blocking copy that follows. Show one clear,
+                # honest message instead of a frozen or misleading meter.
+                compressing_message = '%s\n%s' % (
+                    utils.getString(30229), utils.getString(30230))
+                self.progressBar.updateProgress(
+                    self._INDETERMINATE_PERCENT, compressing_message)
+
                 # send the zip file to the real remote vfs
                 zip_name = os.path.join(self.ZIP_TEMP_PATH, self.remote_vfs.root_path[:-1] + ".zip")
                 self.remote_vfs.cleanup()
@@ -261,6 +290,8 @@ class XbmcBackup:
                         utils.log('Local ZIP verification failed: %s' % error,
                                   xbmc.LOGWARNING)
                         backup_success = False
+                        self._failure_reason = (
+                            'local archive verification failed: %s' % error)
                     fileManager.addFile(zip_name)
 
                 # set root to data dir home and reset remote
@@ -284,7 +315,7 @@ class XbmcBackup:
                     self.transferLeft = self.transferSize
                     fileCopied = self._copyFiles(
                         fileManager.getFiles(), self.xbmc_vfs,
-                        self.remote_vfs)
+                        self.remote_vfs, progress_message=compressing_message)
                     backup_success = bool(fileCopied)
                 if backup_success:
                     try:
@@ -293,6 +324,9 @@ class XbmcBackup:
                         utils.log('Uploaded ZIP verification failed: %s' % error,
                                   xbmc.LOGWARNING)
                         backup_success = False
+                        self._failure_reason = (
+                            'uploaded archive verification failed: %s'
+                            % error)
 
                 # delete the temp zip file
                 if renamed:
@@ -304,6 +338,8 @@ class XbmcBackup:
                     utils.log('Folder backup verification failed: %s' % error,
                               xbmc.LOGWARNING)
                     backup_success = False
+                    self._failure_reason = (
+                        'backup verification failed: %s' % error)
 
             backup_success = self._finalizeBackup(
                 backup_success, remote_artifact, compressing)
@@ -511,6 +547,45 @@ class XbmcBackup:
                 continue
         return False
 
+    @staticmethod
+    def _skinLabel(skin):
+        try:
+            name = xbmcaddon.Addon(skin).getAddonInfo('name')
+            return name if name else skin
+        except Exception:
+            return skin
+
+    @staticmethod
+    def _confirmSkinChange():
+        """Answer Kodi's own 'keep this skin?' safety dialog with Yes.
+
+        This dialog auto-reverts if nobody responds within its own
+        short countdown - too brief for a human to reliably react to
+        (reported 2026-09-10: it appeared and reverted before the user
+        got a usable chance to click Yes). Backup Pro itself requested
+        this exact skin change as part of a restore it is already
+        performing, so the answer is never actually in doubt.
+
+        An earlier version of this method navigated focus with
+        Action(Up) before selecting - that assumed a specific button
+        layout proven only for AF3's own custom yesno dialog. Live
+        testing 2026-09-10 found the flaw directly: this dialog renders
+        using whichever skin is *currently* active at the moment it
+        appears, which for the ensure_inactive() (AF3 -> Estuary) leg
+        is Estuary, not AF3 - a completely different button layout, so
+        Action(Up) did nothing there and the dialog was left on its
+        default "No" (confirmed via System.CurrentControl staying "No"
+        across the whole dialog lifetime, then reverting exactly like a
+        declined change). SendClick(11) is the deterministic,
+        skin-agnostic fix: 11 is Kodi's own standard "Yes" control id
+        for this dialog window, which every skin's yesno template binds
+        its visual Yes button to (confirmed against AF3's own
+        Dialog_DialogConfirm.xml: its custom Yes button's <onclick> is
+        itself SendClick(11)) - clicking it directly needs no knowledge
+        of the active skin's focus/navigation topology at all.
+        """
+        xbmc.executebuiltin('SendClick(11)')
+
     def _switchSkin(self, skin):
         if xbmc.getSkinDir() == skin:
             return
@@ -521,8 +596,10 @@ class XbmcBackup:
         try:
             xbmcgui.Dialog().notification(
                 utils.getString(30010),
-                'Choose Yes when Kodi asks whether to keep {}.'.format(skin),
-                xbmcgui.NOTIFICATION_INFO, 12000)
+                'Kodi is switching to {} to safely apply the restore; '
+                'it will switch back automatically.'.format(
+                    self._skinLabel(skin)),
+                xbmcgui.NOTIFICATION_INFO, 8000)
         except Exception:
             pass
         xbmc.executebuiltin('ActivateWindow(home)')
@@ -532,6 +609,7 @@ class XbmcBackup:
                 value=skin) is not True:
             raise RuntimeError('Kodi refused to change skins')
         confirmation_seen = False
+        confirmation_answered = False
         confirmed_reads = 0
         active_reads = 0
         for _attempt in range(96):
@@ -539,11 +617,16 @@ class XbmcBackup:
             if xbmc.getSkinDir() != skin:
                 active_reads = 0
                 confirmed_reads = 0
+                confirmation_seen = False
+                confirmation_answered = False
                 continue
             active_reads += 1
             if self._skinConfirmationActive():
                 confirmation_seen = True
                 confirmed_reads = 0
+                if not confirmation_answered:
+                    self._confirmSkinChange()
+                    confirmation_answered = True
             elif confirmation_seen:
                 confirmed_reads += 1
                 if confirmed_reads >= 4:
@@ -598,7 +681,10 @@ class XbmcBackup:
                 'Contains: {setting_count} settings, '
                 '{appearance_count} appearance values and '
                 '{helper_file_count} helper files\n\n'
-                'Current AF3 files will be saved locally for recovery.'
+                'Current AF3 files will be saved locally for recovery.\n\n'
+                'Kodi will briefly switch to its default skin, restore '
+                'the backed-up skin configuration, then reactivate the '
+                'backed-up skin.'
             ).format(**preview)
             if not xbmcgui.Dialog().yesno(
                     'Restore Arctic Fuse 3 configuration', label):
@@ -619,13 +705,17 @@ class XbmcBackup:
                 rollback_root, pending_path, host)
             if xbmcgui.Dialog().ok(
                     utils.getString(30010),
-                    'AF3 files are staged safely. Kodi will activate Arctic '
-                    'Fuse 3. Choose Yes when Kodi asks to keep the skin; '
-                    'verification will continue afterward.') is False:
+                    'AF3 files are staged safely. Kodi will activate '
+                    'Arctic Fuse 3; verification will continue '
+                    'afterward.') is False:
                 return False
+            # AF3's rebuild mechanism activates windows through Kodi's
+            # skin-variables add-on; a modal progress dialog left open
+            # here blocks that activation and hangs the rebuild.
+            self.progressBar.close()
             summary = finish_skin_restore(
                 profile, rollback_root, pending_path, host)
-            xbmcgui.Dialog().notification(
+            xbmcgui.Dialog().ok(
                 utils.getString(30010),
                 'Restored and verified {} settings and {} helper files.'
                 .format(summary['setting_count'],
@@ -713,12 +803,17 @@ class XbmcBackup:
                         'resume_staging', 'restage_settings'):
                     resume_skin_restore_staging(
                         profile, rollback_root, pending_path, host)
+                # See the matching comment in _restoreSkinConfig(): AF3's
+                # rebuild mechanism needs to activate windows, which a
+                # modal progress dialog would block.
+                self.progressBar.close()
                 finish_skin_restore(profile, rollback_root, pending_path, host)
                 xbmcgui.Dialog().notification(
                     utils.getString(30010),
                     'The imported Arctic Fuse 3 configuration was restored '
                     'and verified.')
             else:
+                self.progressBar.close()
                 rollback_skin_restore(
                     profile, rollback_root, pending_path, host)
                 xbmcgui.Dialog().notification(
@@ -782,6 +877,50 @@ class XbmcBackup:
             'Background/scheduled execution will not open a recovery '
             'dialog or switch skins.', xbmc.LOGWARNING)
         return True
+
+    def buildStatusReport(self):
+        """Gather a read-only status snapshot from local, already-known
+        state only - no network access and no mutation. Never lists the
+        remote destination's contents; that would risk a slow or blocking
+        call to open a status screen. Returns describe_status()'s
+        (label_key, detail) pairs for a caller to localize and display.
+        """
+        last_backup = {'known': False}
+        last_backup_label = self._lastBackupLabel()
+        if last_backup_label:
+            last_backup = {'known': True, 'label': last_backup_label}
+
+        remote_configured = self.remoteConfigured()
+        remote = {'configured': remote_configured}
+        if remote_configured:
+            if utils.getSetting('remote_selection') == '2':
+                remote['label'] = utils.getString(30027)
+            else:
+                remote['label'] = self.remote_base_path
+
+        recovery_pending = self.inspectSkinRecovery()['kind'] != 'none'
+
+        scheduler = {'enabled': utils.getSettingBool('enable_scheduler')}
+        if scheduler['enabled']:
+            next_run_path = xbmcvfs.translatePath(
+                utils.data_dir()) + 'next_run.txt'
+            if xbmcvfs.exists(next_run_path):
+                with xbmcvfs.File(next_run_path) as fh:
+                    try:
+                        next_run = float(fh.read())
+                    except ValueError:
+                        next_run = 0
+                if next_run > 0:
+                    scheduler['next_run_label'] = utils.getRegionalTimestamp(
+                        datetime.fromtimestamp(next_run),
+                        ['dateshort', 'time'])
+
+        return describe_status({
+            'last_backup': last_backup,
+            'remote': remote,
+            'recovery_pending': recovery_pending,
+            'scheduler': scheduler,
+        })
 
     def _setupVFS(self, mode=-1, progressOverride=False):
         # set windows setting to true
@@ -847,7 +986,14 @@ class XbmcBackup:
             utils.log('Unable to clear backup running state: %s' % error,
                       xbmc.LOGWARNING)
 
-    def _copyFiles(self, fileList, source, dest):
+    # Percent pinned during a copy step whose true progress cannot be
+    # tracked incrementally (see _copyFiles()'s progress_message param) -
+    # deliberately not 100, since the step is not yet done; the bar stays
+    # static instead of jumping back to a misleading, non-advancing byte
+    # countdown.
+    _INDETERMINATE_PERCENT = 99
+
+    def _copyFiles(self, fileList, source, dest, progress_message=None):
         result = True
 
         utils.log("Source: " + source.root_path)
@@ -866,18 +1012,32 @@ class XbmcBackup:
                     utils.log('Writing file: ' + aFile['file'])
 
                 if(aFile['is_dir']):
-                    self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):]) + "/"))
+                    if progress_message is not None:
+                        self.progressBar.updateProgress(
+                            self._INDETERMINATE_PERCENT, progress_message)
+                    else:
+                        self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):]) + "/"))
                     dest.mkdir(dest.root_path + aFile['file'][len(source.root_path):])
                 else:
-                    self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):])))
+                    if progress_message is not None:
+                        self.progressBar.updateProgress(
+                            self._INDETERMINATE_PERCENT, progress_message)
+                    else:
+                        self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):])))
                     self.transferLeft = self.transferLeft - aFile['size']
 
                     # copy the file
                     wroteFile = self._copyFile(source, dest, aFile['file'], dest.root_path + aFile['file'][len(source.root_path):])
 
-                    # if result is still true but this file failed
-                    if(not wroteFile and result):
+                    # record every failure, not just the first, so a
+                    # failed backup can report exactly what went wrong
+                    if(not wroteFile):
                         utils.log("Failed to write " + aFile['file'])
+                        failures = getattr(self, '_copy_failures', None)
+                        if failures is None:
+                            failures = []
+                            self._copy_failures = failures
+                        failures.append(aFile['file'])
                         result = False
 
         return result
@@ -994,15 +1154,28 @@ class XbmcBackup:
             appearance_call=self._skinAppearance,
         )
         owned_paths = managed_source_paths(snapshot['files'])
+        # A unique, per-invocation directory name - not a fixed
+        # 'skin-staging' - matters here specifically: this path is read
+        # twice more after this write (once to hash it for the
+        # manifest, once later to copy its bytes into the archive), and
+        # a fixed name meant a second, overlapping Backup Pro
+        # invocation (confirmed reproducible this session: rapid
+        # repeated triggers, or one invocation still finishing while
+        # another starts) could rmtree()-and-rewrite the very files an
+        # earlier invocation's own hash/copy reads were about to see,
+        # producing an archived file whose bytes silently didn't match
+        # the manifest hash recorded for it - the exact "AF3 snapshot
+        # payload failed verification" restore failure reported
+        # 2026-09-10. A unique path removes the possibility of two
+        # invocations ever sharing one staging directory at all.
         stage_root = os.path.abspath(os.path.join(
-            xbmcvfs.translatePath(utils.data_dir()), 'skin-staging'))
+            xbmcvfs.translatePath(utils.data_dir()),
+            'skin-staging-' + uuid.uuid4().hex))
         data_root = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
         if os.path.dirname(stage_root) != data_root:
             raise SkinAdapterError('invalid skin staging path')
         if os.path.lexists(stage_root):
-            if os.path.islink(stage_root) or not os.path.isdir(stage_root):
-                raise SkinAdapterError('skin staging path is not a safe directory')
-            shutil.rmtree(stage_root)
+            raise SkinAdapterError('skin staging path already exists')
         os.makedirs(stage_root)
         self._skin_stage_path = stage_root
 
@@ -1035,8 +1208,11 @@ class XbmcBackup:
             return
         try:
             data_root = os.path.abspath(xbmcvfs.translatePath(utils.data_dir()))
-            expected = os.path.join(data_root, 'skin-staging')
-            if os.path.abspath(stage_root) != expected or os.path.islink(stage_root):
+            stage_root = os.path.abspath(stage_root)
+            name = os.path.basename(stage_root)
+            if (os.path.dirname(stage_root) != data_root
+                    or not name.startswith('skin-staging-')
+                    or os.path.islink(stage_root)):
                 utils.log('Refusing unsafe skin-stage cleanup', xbmc.LOGWARNING)
                 return
             if os.path.isdir(stage_root):
@@ -1121,9 +1297,18 @@ class XbmcBackup:
         if success:
             self._active_artifact = None
             if self._rotateBackups() is False:
-                utils.showNotification(utils.getString(30092))
+                self._reportBackupFailure(
+                    'an old backup could not be removed during retention')
                 return False
-            utils.showNotification(self._backupCompletionMessage())
+            self._recordLastBackup(artifact_path)
+            # the progress dialog must be fully closed before the success
+            # dialog is shown, or a modal progress dialog stays open
+            # underneath it and reappears, stale, the instant the user
+            # dismisses success (_closeVFS() closes it again later, but
+            # that is too late for what the user already saw on screen).
+            self.progressBar.close()
+            xbmcgui.Dialog().ok(
+                utils.getString(30010), self._backupCompletionMessage())
             return True
         if artifact_path:
             if compressed:
@@ -1131,8 +1316,83 @@ class XbmcBackup:
             else:
                 self.remote_vfs.rmdir(artifact_path)
         self._active_artifact = None
-        utils.showNotification(utils.getString(30092))
+        self._reportBackupFailure()
         return False
+
+    def _recordLastBackup(self, artifact_path):
+        """Record a small local marker for buildStatusReport() to read.
+
+        Status must stay local-only and never list the remote
+        destination's contents (a Dropbox listing in particular would
+        risk a slow or blocking network call just to open the Status
+        screen) - so a successful backup's identity is recorded here,
+        once, at completion time, instead of being discovered later by
+        asking the remote what exists. Best-effort: a failure to write
+        this marker must never fail an otherwise-successful backup.
+        """
+        try:
+            name = os.path.basename(artifact_path.rstrip('/'))
+            if not name:
+                return
+            data_root = xbmcvfs.translatePath(utils.data_dir())
+            os.makedirs(data_root, exist_ok=True)
+            with open(os.path.join(data_root, self.LAST_BACKUP_FILE), 'w',
+                      encoding='utf-8') as handle:
+                json.dump({'name': name}, handle)
+        except Exception as error:
+            utils.log('Unable to record last backup marker: %s' % error,
+                      xbmc.LOGWARNING)
+
+    def _lastBackupLabel(self):
+        """Read back the marker _recordLastBackup() writes. Local-file
+        read only - safe to call from buildStatusReport()."""
+        try:
+            path = os.path.join(
+                xbmcvfs.translatePath(utils.data_dir()),
+                self.LAST_BACKUP_FILE)
+            if not os.path.isfile(path):
+                return None
+            with open(path, 'r', encoding='utf-8') as handle:
+                recorded = json.load(handle)
+            name = recorded.get('name', '')
+            if not name:
+                return None
+            base = name.split('.')[0]
+            return self._dateFormat(base)
+        except Exception as error:
+            utils.log('Unable to read last backup marker: %s' % error,
+                      xbmc.LOGWARNING)
+            return None
+
+    def _reportBackupFailure(self, reason=None):
+        """Show a persistent, actively-dismissed failure dialog instead
+        of a transient notification, so a failed backup can never be
+        mistaken for a partial success that was still saved. `reason`
+        overrides any reason already recorded (e.g. from an exception
+        caught higher up); per-file copy failures collected during this
+        run (see _copyFiles()) are always included regardless."""
+        if reason:
+            self._failure_reason = reason
+        # same rationale as _finalizeBackup's success path: the progress
+        # dialog must be closed before this dialog shows, not left to be
+        # closed later by _closeVFS().
+        self.progressBar.close()
+        xbmcgui.Dialog().ok(utils.getString(30010), self._backupFailureMessage())
+
+    def _backupFailureMessage(self):
+        parts = [utils.getString(30192)]
+        reason = getattr(self, '_failure_reason', None)
+        if reason:
+            parts.append(str(reason))
+        failures = getattr(self, '_copy_failures', None) or []
+        if failures:
+            parts.append('%d %s:' % (len(failures), utils.getString(30193)))
+            for path in failures[:5]:
+                parts.append(' - ' + path)
+            remaining = len(failures) - 5
+            if remaining > 0:
+                parts.append('%d %s' % (remaining, utils.getString(30194)))
+        return '\n'.join(parts)
 
     def _backupCompletionMessage(self):
         """Clear included/excluded counts, sizes, cache-regeneration
@@ -1142,7 +1402,7 @@ class XbmcBackup:
         """
         description = describe_backup_plan(
             getattr(self, 'backup_plan', None) or {})
-        parts = [utils.getString(30168)]
+        parts = [utils.getString(30168), utils.getString(30195)]
         parts.append('%d %s (%s)' % (
             description['included_files'], utils.getString(30169),
             utils.diskString(description['included_kib'] * 1024)))
@@ -1154,7 +1414,7 @@ class XbmcBackup:
             parts.append(utils.getString(30171))
         if getattr(self, '_skin_snapshot_metadata', None) is not None:
             parts.append(utils.getString(30172))
-        return ' | '.join(parts)
+        return '\n'.join(parts)
 
     def _discardActiveArtifact(self):
         artifact = getattr(self, '_active_artifact', None)

@@ -52,9 +52,25 @@ def validate_skin_id(skin_id):
 
 
 def volatile_skin_setting(setting_id):
-    """Exclude Skin Variables build fingerprints, not user preferences."""
-    return (setting_id.startswith('script-skinvariables-')
-            and setting_id.endswith('-hash'))
+    """Exclude Skin Variables build fingerprints, not user preferences.
+
+    Live restore testing 2026-09-10 found two sibling self-written,
+    session-local cache keys reappearing in settings.xml as an ordinary
+    side effect of AF3 reactivating and rebuilding, each missed by an
+    earlier, narrower version of this pattern: `script-skinviewtypes-hash`
+    (missing the `-variables-` segment a `script-skinvariables-*-hash`
+    pattern required) and, once rebuild_skin() itself ran and
+    regenerated view templates, `script-skinviewtypes-checksum` (a
+    `-checksum` suffix, not `-hash`) - confirmed by diffing the staged
+    snapshot against live settings.xml at the exact
+    verify_loaded_settings() failure point both times: it was the only
+    difference, every real user setting matched. Matches any
+    `script-skin*` id ending in either `-hash` or `-checksum`, the two
+    build-fingerprint suffixes actually observed, without excluding
+    anything that looks like a real, user-authored setting."""
+    return (setting_id.startswith('script-skin')
+            and (setting_id.endswith('-hash')
+                 or setting_id.endswith('-checksum')))
 
 
 def checked_skin_setting_values(values):

@@ -4,6 +4,7 @@ import resources.lib.utils as utils
 from resources.lib.backup import XbmcBackup
 from resources.lib.authorizers import DropboxAuthorizer
 from resources.lib.advanced_editor import AdvancedBackupEditor
+from resources.lib.help_content import build_help_text
 
 # mode constants
 BACKUP = 0
@@ -11,6 +12,39 @@ RESTORE = 1
 SETTINGS = 2
 ADVANCED_EDITOR = 3
 LAUNCHER = 4
+HELP = 5
+STATUS = 6
+
+# maps buildStatusReport()'s label keys to their localized string ids
+STATUS_LABEL_STRING_IDS = {
+    'last_backup_known': 30175,
+    'last_backup_unknown': 30176,
+    'remote_configured': 30177,
+    'remote_not_configured': 30178,
+    'recovery_pending': 30179,
+    'recovery_clear': 30180,
+    'scheduler_enabled_next': 30181,
+    'scheduler_enabled_unknown': 30182,
+    'scheduler_disabled': 30183,
+}
+
+
+def show_help():
+    xbmcgui.Dialog().textviewer(
+        utils.getString(30010), build_help_text(utils.getString))
+
+
+def show_status(active_backup):
+    # buildStatusReport() is read-only and local-only (no network access,
+    # no mutation) - safe to call every time Status is opened
+    report = active_backup.buildStatusReport()
+    lines = []
+    for label_key, detail in report:
+        label = utils.getString(STATUS_LABEL_STRING_IDS[label_key])
+        lines.append('%s %s' % (label, detail) if detail else label)
+    xbmcgui.Dialog().textviewer(
+        utils.getString(30010) + " - " + utils.getString(30174),
+        '\n'.join(lines))
 
 
 def authorize_cloud(cloudProvider):
@@ -74,14 +108,18 @@ if(skinRecoveryPending):
     mode = -1
 elif(mode == -1):
     # by default, Backup,Restore,Open Settings
-    options = [utils.getString(30016), utils.getString(30017), utils.getString(30099)]
+    menu_items = [(BACKUP, utils.getString(30016)), (RESTORE, utils.getString(30017)), (SETTINGS, utils.getString(30099))]
 
     # find out if we're using the advanced editor
     if(utils.getSettingInt('backup_selection_type') == 1):
-        options.append(utils.getString(30125))
+        menu_items.append((ADVANCED_EDITOR, utils.getString(30125)))
+
+    menu_items.append((HELP, utils.getString(30173)))
+    menu_items.append((STATUS, utils.getString(30174)))
 
     # figure out if this is a backup or a restore from the user
-    mode = xbmcgui.Dialog().select(utils.getString(30010) + " - " + utils.getString(30023), options)
+    selected = xbmcgui.Dialog().select(utils.getString(30010) + " - " + utils.getString(30023), [label for _, label in menu_items])
+    mode = menu_items[selected][0] if selected != -1 else -1
 
 # check which mode should be run
 if(mode != -1):
@@ -93,6 +131,10 @@ if(mode != -1):
         # open the advanced editor but only if in advanced mode
         editor = AdvancedBackupEditor()
         editor.showMainScreen()
+    elif(mode == HELP):
+        show_help()
+    elif(mode == STATUS):
+        show_status(backup)
     elif(mode == LAUNCHER):
         # copied from old launcher.py
         if(params['action'] == 'authorize_cloud'):

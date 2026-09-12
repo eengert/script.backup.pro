@@ -87,6 +87,9 @@ class FakeHost:
     def progress(self, percent, message):
         self.events.append(('progress', percent, message))
 
+    def wait(self, seconds):
+        self._event('wait', seconds)
+
 
 class SkinCoordinatorTests(unittest.TestCase):
     def setUp(self):
@@ -440,6 +443,132 @@ class SkinCoordinatorTests(unittest.TestCase):
         self.assertEqual('complete', skin_transaction.skin_transaction_status(
             self.profile, self.rollback, pending['rollback'],
             pending['transaction_id']))
+
+    def test_finish_retries_helper_verification_through_a_transient_mismatch(self):
+        # regression guard: rebuild_skin()'s own RunScript completion
+        # signal can fire a moment before its file writes are fully
+        # flushed to disk - confirmed live 2026-09-10, where a hash
+        # mismatch here resolved on its own within a few seconds with
+        # no further action taken (a settling delay, not corrupted or
+        # missing content). _verify_helper_sources() must retry briefly
+        # (the same bounded pattern verify_loaded_settings() already
+        # uses) rather than fail the whole restore for that delay.
+        host = FakeHost()
+        pending = self.stage(host)
+        helper = next(iter(pending['helper_hashes']))
+        original = (self.profile / helper).read_bytes()
+        (self.profile / helper).write_bytes(b'{"still-writing": true}')
+
+        def settle_on_wait(_seconds):
+            (self.profile / helper).write_bytes(original)
+        host.wait = settle_on_wait
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
+    def test_finish_waits_for_writes_to_settle_not_a_fixed_retry_count(self):
+        # regression guard: rebuild_skin()'s writes can land in more than
+        # one step before settling on their final content - simulate a
+        # helper file rewritten several times before finally settling,
+        # and confirm verification keeps retrying through each
+        # intermediate value rather than judging too early.
+        host = FakeHost()
+        pending = self.stage(host)
+        helper = next(iter(pending['helper_hashes']))
+        original = (self.profile / helper).read_bytes()
+        (self.profile / helper).write_bytes(b'{"still-writing": 1}')
+
+        remaining = [b'{"still-writing": 2}', b'{"still-writing": 3}', original]
+
+        def keep_changing(_seconds):
+            if remaining:
+                (self.profile / helper).write_bytes(remaining.pop(0))
+        host.wait = keep_changing
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
+        self.assertEqual([], remaining)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
+    def test_finish_requires_a_confirmed_quiet_window_after_a_straggler_reinit(self):
+        # regression guard, 2026-09-11: Eric reported the final restore
+        # dialog (shown only after finish_skin_restore() already
+        # returned - see _restoreSkinConfig() in backup.py) was
+        # dismissed 2-3s after it appeared. Root cause: rebuild_skin()'s
+        # ReloadSkin() triggers AF3's own onload-driven shortcut-rebuild
+        # chain, which keeps running via Kodi's window lifecycle
+        # independently of this synchronous call chain and can briefly
+        # let a helper file read correctly before rewriting it again a
+        # moment later. A single match against `expected` proved
+        # correctness at that instant, never that the cascade had
+        # actually finished - simulate exactly that: the file already
+        # matches, a straggler reinit corrupts it a few ticks in, then
+        # it settles back - and confirm verification does not return
+        # until the match has held for a full confirmed-quiet window
+        # afterward, not just on the first (pre-straggler) streak.
+        host = FakeHost()
+        pending = self.stage(host)
+        helper = next(iter(pending['helper_hashes']))
+        original = (self.profile / helper).read_bytes()
+
+        ticks = {'n': 0}
+
+        def straggler_reinit(_seconds):
+            ticks['n'] += 1
+            if ticks['n'] == 3:
+                (self.profile / helper).write_bytes(
+                    b'{"straggler-reinit": true}')
+            elif ticks['n'] == 4:
+                (self.profile / helper).write_bytes(original)
+        host.wait = straggler_reinit
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
+        # the straggler must have actually fired during verification,
+        # proving this didn't just return on the very first read before
+        # ever seeing it (which is exactly what the disproven
+        # single-match design would have done here).
+        self.assertGreaterEqual(ticks['n'], 4)
+        self.assertIsNone(skin_state.read_pending_state(self.state))
+
+    def test_finish_ignores_helper_files_rebuild_creates_that_backup_never_captured(self):
+        # regression guard, root-caused 2026-09-11: three straight fixed-
+        # bound widenings (15s, 100s, 300s) all failed live even though
+        # the four captured helper files matched their expected hashes
+        # every single time this was checked directly. The real bug was
+        # never about timing: read_current_managed_files() walks every
+        # *currently* managed helper file, including a `-viewtypes.json`
+        # cache rebuild_skin()'s own buildviews action can create fresh
+        # on a profile that had none at backup time - `expected` (built
+        # from what backup actually captured) never has that key, so
+        # comparing the two dicts for exact equality could never
+        # succeed, on any bound, however long. Verification must score
+        # only the paths the backup actually captured, ignoring any
+        # extra managed file rebuild_skin() legitimately creates as a
+        # side effect.
+        host = FakeHost()
+        pending = self.stage(host)
+        self.assertNotIn(
+            'addon_data/script.skinvariables/skin.arctic.fuse.3-viewtypes.json',
+            pending['helper_hashes'])
+        viewtypes = (self.profile
+                     / 'addon_data/script.skinvariables'
+                     / 'skin.arctic.fuse.3-viewtypes.json')
+        viewtypes.parent.mkdir(parents=True, exist_ok=True)
+        viewtypes.write_bytes(b'{"created-by-rebuild": true}')
+
+        result = skin_coordinator.finish_skin_restore(
+            self.profile, self.rollback, self.state, host)
+
+        self.assertEqual(AF3_ID, result['skin_id'])
+        self.assertIsNone(skin_state.read_pending_state(self.state))
 
     def test_finish_rejects_changed_helper_source_and_keeps_pending(self):
         host = FakeHost()

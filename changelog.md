@@ -4,6 +4,120 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.14
+
+### Fixed
+
+- The compressed-backup progress dialog showed a frozen "X remaining"
+  byte countdown during the final copy of the finished archive to the
+  backup destination, since that step copies one large file with no
+  incremental progress available. It now shows a clear, honest message
+  ("Compressing backup into ZIP archive...") instead of a misleading,
+  non-advancing figure.
+- The progress dialog could stay open underneath the final success or
+  failure dialog and reappear, stale, right after it was dismissed. The
+  progress dialog is now closed before either result dialog is shown.
+
+## Version 0.9.13
+
+### Fixed
+
+- The "Set Zip File Location" setting could still appear under Compress
+  Archives after 0.9.12's attempted fix. The internal zip staging path is
+  now genuinely never exposed as a user setting, on real Kodi, not just
+  according to the settings file - compressed backups continue to work
+  exactly as before.
+
+## Version 0.9.12
+
+### Fixed
+
+- Enabling Compress Archives no longer exposes a separate "Set Zip File
+  Location" setting. That setting was only ever an internal staging path used
+  while building the archive on local disk, never a second destination -
+  compressed and uncompressed backups have always been written to the same
+  configured backup destination, and now the settings screen reflects that.
+
+### Changed
+
+- Help's Compression section now explains plainly that compression only
+  changes the archive format and always uses the same configured backup
+  location.
+
+## Version 0.9.11
+
+### Fixed
+
+- The final restore completion dialog could be dismissed a few seconds after
+  appearing, before you had a chance to read it, if Arctic Fuse 3 was still
+  quietly refreshing its menus and widgets in the background right after a
+  restore. Completion is now confirmed to stay stable for several seconds
+  before that dialog is shown, so it should no longer disappear on its own.
+
+## Version 0.9.10
+
+### Fixed
+
+- Backup failures are now tracked per file, not just the first one encountered,
+  and reported in a clear, persistent dialog stating what failed and why --
+  instead of a vague, easily-missed notification that could be mistaken for a
+  partial success. A failed backup was already correctly discarded and never
+  offered as a restore point; this release only makes that failure clearly
+  reported instead of silently confusing.
+- Status now correctly reflects your real backup history via a small local
+  completion marker, instead of always reporting no backup history regardless
+  of past successful backups.
+
+### Changed
+
+- Successful backups now show a persistent confirmation dialog stating the
+  backup is valid and can be restored, instead of a transient notification
+  that could be missed.
+- Backup setting names are clearer: Add-on Settings & Data, Exclude TMDb
+  Helper Cached Images, Back Up Arctic Fuse 3 Configuration, Kodi
+  Configuration Files, Kodi Databases, Installed User Add-ons (setting IDs
+  and behavior are unchanged).
+- Help has been rewritten as organized, friendly sections covering what gets
+  backed up, compression, destination and storage, restore, scheduling,
+  status, and the difference between an expected skip and a real failure.
+
+## Version 0.9.9
+
+### Added
+
+- Full Arctic Fuse 3 (AF3) skin configuration backup and restore: crash-safe
+  staging and rollback across interruption, previous-appearance restoration,
+  Skin Variables rebuild, and verification of restored settings and helper
+  files.
+- Help and Status main-menu entries.
+- A clear backup-completion summary notification.
+- Updated add-on icon artwork.
+
+### Fixed
+
+- Restore no longer misses Kodi's own skin-change confirmation dialog;
+  Backup Pro now answers it automatically and deterministically.
+- Eliminated false-positive "restore incomplete" reports caused by Skin
+  Variables' own build-fingerprint settings and a timing race in helper-file
+  verification after the skin rebuild.
+- A crash in archive checksum computation on certain files.
+
+### Changed
+
+- The pre-restore confirmation now explains that Kodi will briefly switch to
+  its default skin, restore the backed-up configuration, then reactivate the
+  backed-up skin.
+- The final restore result is now shown as a dialog you must dismiss,
+  instead of a notification that could be missed.
+
+### Removed
+
+- The obsolete v1.5.0 upgrade-notice dialog.
+
+**Apple TV / tvOS**: not validated on physical hardware in this release;
+treat as unsupported until device testing is separately authorized and
+completed.
+
 ## Version 0.9.8
 
 ### Added

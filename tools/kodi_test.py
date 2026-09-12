@@ -1,0 +1,844 @@
+#!/usr/bin/env python3
+"""Safe disposable Kodi runner and allowlisted development installer.
+
+Isolation model (verified against an actual Kodi 21.1 launch on this Mac,
+2026-09-10 - see docs/MAC_KODI_VALIDATION.md): Kodi resolves its profile
+from the process's HOME environment variable, not from any profile-path
+flag (there is none; `--portable` uses an install-relative directory
+instead). Pointing HOME at a project-local, disposable directory makes
+Kodi resolve macOS-style paths beneath it:
+
+    special://home/    -> $HOME/Library/Application Support/Kodi
+    special://profile/ -> $HOME/Library/Application Support/Kodi/userdata
+    special://logpath/ -> $HOME/Library/Logs
+    special://temp/    -> $HOME/.kodi/temp
+
+Everything this module writes to, resets, or reports as the disposable
+Kodi location is anchored under KODI_APPDATA_DIR/KODI_LOG_FILE, matching
+that observed behavior - not a `.kodi/` layout, which real Kodi 21.1 does
+not use for its profile or logs on macOS.
+
+Non-interactive script triggering (needed for Phase 9a steps 5+, e.g.
+"trigger a Backup Pro backup" without a human clicking the main menu):
+`special://profile/autoexec.py`, the legacy XBMC/Kodi startup-script
+hook, does NOT exist in this Kodi 21.1 macOS build - confirmed
+empirically on 2026-09-10 (a marker-file-writing autoexec.py never ran
+across several real launches, and the string "autoexec" does not occur
+anywhere in the Kodi binary or bundled system resources). Do not rely on
+autoexec.py here.
+
+JSON-RPC (`configure_webserver()` + `execute_addon()`) is proven instead
+(2026-09-10, real launch on this Mac): the disposable webserver comes up
+on the configured port (confirmed via `CWebserver[<port>]: Started` in
+the log), `JSONRPC.Ping` returns `pong` over HTTP Basic Auth, and
+`Addons.ExecuteAddon` genuinely invokes the add-on's `default.py`/
+`service.py` inside the running Kodi process (confirmed via a real
+Python traceback naming those exact files/line numbers in the log) -
+but only *after* first calling `Addons.SetAddonEnabled`, since a freshly
+`install()`-ed add-on is not enabled by default. Separately discovered:
+Backup Pro's declared `addon.xml` dependencies
+(`script.module.dateutil`, `script.module.future`,
+`script.module.dropbox`, `script.module.pyqrcode`) - and their own
+further transitive dependencies (`script.module.dropbox` alone needs
+`six`, `requests`, `certifi`, `chardet`, `idna`, `urllib3`) - are not
+present in a disposable profile that only ran `install()` (which
+copies Backup Pro's own files only); `install_dependencies()` resolves
+and copies the full transitive closure from the real profile to fix
+this.
+
+With dependencies resolved, a triggered `mode=backup` run (2026-09-10)
+got all the way to `XbmcBackup._createValidationFile()` before failing
+- proving the trigger mechanism works end-to-end, not just that Kodi's
+API accepted the call. The failure was a real Backup Pro production
+bug, not a harness or dependency issue:
+`resources/lib/archive.py::sha256_reader()` assumed `read_chunk()`
+returns `bytes` or `str` and called `.encode('utf-8')` on anything
+else, but this Kodi 21.1 build's `xbmcvfs.File.read()` returns
+`bytearray`, which has no `.encode()` method. Fixed (commit
+`22c914c`); a triggered backup now completes and its manifest was
+inspected directly (correct addon/Kodi version, correct exclusions,
+hashed files) - Phase 9a step 5 is proven done.
+
+`install_skin()` (built on the same `_copy_addon_closure()` used by
+`install_dependencies()`) copies a skin add-on - default Arctic Fuse 3
+- into the disposable profile for step 4+: Backup Pro's AF3 capture is
+gated on `xbmc.getSkinDir() == AF3_ID`, so AF3 must actually be the
+*active* skin, not merely present. `configure_webserver()`'s
+`extra_settings` lets a caller set `lookandfeel.skin` in the same
+pre-launch write as the webserver settings (it can only be called once
+per fresh profile).
+
+AF3 activation itself needed two more fixes before it worked
+(2026-09-10, all confirmed against real launches, no network access
+used): (1) `_copy_addon_closure()` only ever checked the real profile's
+`addons/` directory, so it wrongly reported `script.module.pil` (needed
+transitively by two of AF3's own dependencies) as missing - it's
+actually bundled inside Kodi.app itself (`KODI_SYSTEM_ADDONS_DIR`),
+visible to every profile automatically; fixed to check there first and
+skip copying anything already available that way. (2) every freshly
+copied add-on - AF3 itself and its whole dependency closure, not just
+Backup Pro - starts disabled, and Kodi's boot-time skin loader silently
+falls back to Estuary if any of a skin's hard dependencies are
+disabled; `enable_addons()` batch-enables them, followed by `restart()`
+for a clean boot (a live `Settings.SetSettingValue` skin switch while
+already running does not trigger a real reload - confirmed empirically,
+only stop()+launch() does). With all of that, AF3 activates
+successfully and a triggered backup with `backup_skin_config=true`
+produces a real `skin_config/` capture with correct skin/helper
+id/version and real appearance settings - Phase 9a step 4 is proven
+done, no network install was actually needed. See
+docs/MAC_KODI_VALIDATION.md → "Evidence and automation boundary" for
+the full picture.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from xml.sax.saxutils import escape as _xml_escape
+
+PROJECT = Path(__file__).resolve().parents[1]
+ROOT = PROJECT / ".kodi-test"
+HOME = ROOT / "home"
+KODI_APPDATA_DIR = HOME / "Library" / "Application Support" / "Kodi"
+KODI_USERDATA_DIR = KODI_APPDATA_DIR / "userdata"
+KODI_ADDONS_DIR = KODI_APPDATA_DIR / "addons"
+KODI_LOG_FILE = HOME / "Library" / "Logs" / "kodi.log"
+KODI_GUISETTINGS_FILE = KODI_USERDATA_DIR / "guisettings.xml"
+PID_FILE = ROOT / "kodi.pid"
+KODI = Path("/Applications/Kodi.app/Contents/MacOS/Kodi")
+# add-ons bundled inside the Kodi.app installation itself (special://xbmc/addons/)
+# - visible to every profile automatically, including a brand-new disposable
+# one, with no per-profile copying at all. Confirmed empirically 2026-09-10:
+# script.module.pil and repository.xbmc.org both live here, not in any
+# per-profile addons/ directory.
+KODI_SYSTEM_ADDONS_DIR = KODI.parent.parent / "Resources" / "Kodi" / "addons"
+ADDON_ID = "script.backup.pro"
+AF3_SKIN_ID = "skin.arctic.fuse.3"
+# Human-authorized, narrowly scoped network-install allowlist - see
+# docs/MAC_KODI_VALIDATION.md -> "Authorized network-install
+# capability". Do not add to this set without a new human decision
+# recorded the same way.
+AUTHORIZED_NETWORK_PACKAGES = frozenset({"script.module.pil"})
+OFFICIAL_REPOSITORY_ID = "repository.xbmc.org"
+INSTALLER_ADDON_ID = "script.kodi-test.installer"
+WEBSERVER_PORT = 8899
+WEBSERVER_USERNAME = "kodi-test"
+WEBSERVER_PASSWORD = "kodi-test-only"
+
+# the real, normal Kodi profile location this harness must never overlap
+NORMAL_APPDATA_DIR = Path.home() / "Library" / "Application Support" / "Kodi"
+NORMAL_LOG_FILE = Path.home() / "Library" / "Logs" / "kodi.log"
+
+
+def _inside(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _overlaps(a: Path, b: Path) -> bool:
+    a, b = a.resolve(), b.resolve()
+    return a == b or _inside(a, b) or _inside(b, a)
+
+
+def verify_isolation() -> dict[str, str]:
+    if not KODI.is_file() or not os.access(KODI, os.X_OK):
+        raise RuntimeError(f"Kodi executable is unavailable: {KODI}")
+    if (ROOT == Path("/") or not _inside(HOME, ROOT)
+            or not _inside(KODI_APPDATA_DIR, HOME)
+            or not _inside(KODI_LOG_FILE.parent, HOME)):
+        raise RuntimeError("unsafe disposable path configuration")
+    if _overlaps(KODI_APPDATA_DIR, NORMAL_APPDATA_DIR):
+        raise RuntimeError(
+            "disposable Kodi profile overlaps the normal Kodi profile")
+    if _overlaps(KODI_LOG_FILE, NORMAL_LOG_FILE):
+        raise RuntimeError(
+            "disposable Kodi log overlaps the normal Kodi log")
+    return {
+        "root": str(ROOT),
+        "home": str(HOME),
+        "appdata": str(KODI_APPDATA_DIR),
+        "userdata": str(KODI_USERDATA_DIR),
+        "addons": str(KODI_ADDONS_DIR),
+        "log": str(KODI_LOG_FILE),
+        "executable": str(KODI),
+    }
+
+
+def _env() -> dict[str, str]:
+    verify_isolation()
+    env = os.environ.copy()
+    env["HOME"] = str(HOME)
+    env.pop("KODI_HOME", None)
+    return env
+
+
+def reset() -> None:
+    verify_isolation()
+    if PID_FILE.exists():
+        raise RuntimeError("Kodi appears active; stop it before reset")
+    if ROOT.exists():
+        if ROOT.resolve() != ROOT or not _inside(ROOT, PROJECT):
+            raise RuntimeError("refusing to reset unexpected disposable path")
+        shutil.rmtree(ROOT)
+    ROOT.mkdir(parents=True)
+    HOME.mkdir()
+
+
+def status() -> dict[str, object]:
+    info = verify_isolation()
+    pid = None
+    running = False
+    if PID_FILE.exists():
+        pid = int(PID_FILE.read_text().strip())
+        try:
+            os.kill(pid, 0)
+            running = True
+        except (OSError, ProcessLookupError):
+            PID_FILE.unlink(missing_ok=True)
+    info.update({"pid": pid, "running": running})
+    return info
+
+
+_process: subprocess.Popen | None = None
+"""The Popen handle for a Kodi child this same process spawned, if any.
+Only meaningful within one Python process's lifetime (e.g. a single
+prepare_validation() call that launch()es more than once) - a fresh CLI
+invocation of `launch`/`stop` never sees a prior one's handle, which is
+fine: in that cross-process case the child gets reparented to launchd
+once its original launcher process exits, and launchd reaps it, so
+os.kill(pid, 0) correctly reports it as gone. See stop()'s docstring for
+why this variable exists at all."""
+
+
+def launch() -> None:
+    global _process
+    verify_isolation()
+    if status()["running"]:
+        raise RuntimeError("disposable Kodi is already running")
+    ROOT.mkdir(parents=True, exist_ok=True)
+    HOME.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen([str(KODI)], env=_env(), cwd=str(ROOT),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    _process = proc
+    PID_FILE.write_text(f"{proc.pid}\n")
+    time.sleep(1)
+    if proc.poll() is not None:
+        PID_FILE.unlink(missing_ok=True)
+        _process = None
+        raise RuntimeError(f"Kodi exited during launch (status {proc.returncode})")
+
+
+def stop(timeout_seconds: float = 15.0) -> None:
+    """Stop the disposable Kodi instance, waiting up to timeout_seconds
+    for a clean exit. If this same Python process's own launch() started
+    it, wait() on that exact Popen handle to reap it directly - without
+    this, a Kodi process SIGTERM'd by its own still-running parent
+    becomes a zombie (os.kill(pid, 0) keeps succeeding on a zombie
+    regardless of who calls it, since the entry only leaves the process
+    table once its real parent reaps it or exits), so the polling loop
+    below would spin until timeout_seconds no matter how large that
+    value is - confirmed empirically 2026-09-10 when prepare_validation()
+    became the first caller to launch() Kodi more than once within a
+    single long-running process; raising the timeout from 15s to 90s
+    made no difference because the wait condition itself could never
+    become true. A separate CLI invocation of `stop` (the common case
+    everywhere else in this harness) has no such handle - Kodi was
+    reparented to launchd when its original launcher process already
+    exited, and launchd reaps it, so the plain os.kill(pid, 0) poll
+    below is correct and sufficient there."""
+    global _process
+    info = status()
+    if not info["running"]:
+        return
+    pid = int(info["pid"])
+    os.kill(pid, signal.SIGTERM)
+    if _process is not None and _process.pid == pid:
+        # We own this child: reap it directly rather than polling
+        # os.kill(pid, 0), which cannot distinguish "still running" from
+        # "exited but not yet reaped" (a zombie) - see the docstring
+        # above. There is no correct fallback poll once we know we own
+        # the process; either wait() succeeds or it genuinely hasn't
+        # exited within timeout_seconds.
+        try:
+            _process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                "Kodi did not stop safely; inspect it before retrying")
+        _process = None
+        PID_FILE.unlink(missing_ok=True)
+        return
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not status()["running"]:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("Kodi did not stop safely; inspect it before retrying")
+
+
+def install(source: Path) -> None:
+    verify_isolation()
+    source = source.resolve()
+    if not source.is_dir() or not _inside(source, PROJECT):
+        raise RuntimeError("source must be inside the Backup Pro project")
+    required = [source / "addon.xml", source / "default.py"]
+    if any(not p.is_file() for p in required):
+        raise RuntimeError("source is not a complete Backup Pro add-on")
+    destination = KODI_ADDONS_DIR / ADDON_ID
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    allow = {"addon.xml", "default.py", "service.py", "icon.png", "fanart.jpg", "resources"}
+    for name in allow:
+        src = source / name
+        if not src.exists():
+            continue
+        if src.is_symlink():
+            raise RuntimeError(f"symlink is not allowed: {src}")
+        dst = destination / name
+        if src.is_dir():
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        else:
+            shutil.copy2(src, dst)
+
+
+def _declared_dependencies(source: Path = PROJECT) -> list[str]:
+    """The real add-on ids source/addon.xml declares as <requires>,
+    excluding virtual xbmc.* platform dependencies (e.g. xbmc.python,
+    xbmc.gui - Kodi's own built-in interfaces, not real installable
+    add-ons; confirmed empirically 2026-09-10 against
+    skin.arctic.fuse.3's own addon.xml, which declares xbmc.gui)."""
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(source / "addon.xml")
+    return [el.get("addon") for el in tree.getroot().findall("./requires/import")
+            if not el.get("addon", "").startswith("xbmc.")]
+
+
+def _copy_addon_closure(seed_ids: list[str]) -> list[str]:
+    """Copy each of seed_ids - and every add-on any of them declares as
+    a dependency, transitively - from the real, normal Kodi profile
+    into the disposable profile: read-only from the real profile,
+    confined write to the disposable profile only. An add-on already
+    bundled inside the Kodi.app installation itself
+    (KODI_SYSTEM_ADDONS_DIR) is skipped entirely - it's already visible
+    to every profile, including a fresh disposable one, with no copying
+    needed (confirmed empirically 2026-09-10: script.module.pil lives
+    there, not in any per-profile addons/ directory - the earlier
+    "missing dependency" finding was this function only ever checking
+    the profile location). Refuses an add-on found in neither location,
+    or a symlinked profile source. Shared by install_dependencies() and
+    install_skin(); both need the same "make this and everything it
+    transitively needs available" behavior."""
+    verify_isolation()
+    installed = []
+    seen: set[str] = set()
+    pending = list(seed_ids)
+    while pending:
+        addon_id = pending.pop(0)
+        if addon_id in seen:
+            continue
+        seen.add(addon_id)
+        system_source = KODI_SYSTEM_ADDONS_DIR / addon_id
+        if system_source.is_dir():
+            # already bundled with Kodi itself - nothing to copy, but
+            # still walk its own declared dependencies in case one of
+            # those needs to come from the real profile instead
+            pending.extend(_declared_dependencies(system_source))
+            continue
+        real_source = NORMAL_APPDATA_DIR / "addons" / addon_id
+        if not real_source.is_dir():
+            raise RuntimeError(
+                "add-on not found in the Kodi system bundle or the "
+                f"real Kodi profile: {addon_id}")
+        if real_source.is_symlink():
+            raise RuntimeError(f"symlink is not allowed: {real_source}")
+        destination = KODI_ADDONS_DIR / addon_id
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(real_source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+        installed.append(addon_id)
+        pending.extend(_declared_dependencies(real_source))
+    return installed
+
+
+def install_dependencies(source: Path = PROJECT) -> list[str]:
+    """Copy every add-on Backup Pro's addon.xml declares as a
+    dependency - and every dependency of those dependencies,
+    transitively - from the real, normal Kodi profile into the
+    disposable profile. install() only copies Backup Pro's own files;
+    without this, a triggered run fails with ModuleNotFoundError, first
+    on Backup Pro's own direct dependencies and then, once those are
+    present, on a transitive one (script.module.dropbox needs
+    script.module.requests, which is not declared in Backup Pro's own
+    addon.xml) - both confirmed empirically 2026-09-10, see
+    docs/MAC_KODI_VALIDATION.md."""
+    return _copy_addon_closure(_declared_dependencies(source))
+
+
+def install_skin(skin_id: str = AF3_SKIN_ID) -> list[str]:
+    """Copy a skin add-on (default: Arctic Fuse 3) and its own
+    transitive dependencies from the real, normal Kodi profile into the
+    disposable profile. Needed for Phase 9a step 4+: Backup Pro's AF3
+    capture is gated on xbmc.getSkinDir() == AF3_ID (see
+    resources/lib/backup.py), so AF3 must actually be present - and, via
+    configure_webserver()'s extra_settings, made the active skin - not
+    merely installed alongside it."""
+    return _copy_addon_closure([skin_id])
+
+
+def configure(addon_id: str, values: dict[str, str]) -> None:
+    """Pre-seed disposable per-profile add-on settings before launch (a
+    scripted, reversible edit confined to the disposable profile - not a
+    live UI action). Any setting not listed here still resolves to that
+    add-on's own declared default, exactly like a real, untouched
+    install."""
+    verify_isolation()
+    if not values:
+        raise RuntimeError("no settings given")
+    settings_dir = KODI_USERDATA_DIR / "addon_data" / addon_id
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    lines = ['<settings version="2">']
+    for key, value in values.items():
+        lines.append(f'    <setting id="{_xml_escape(key)}">{_xml_escape(str(value))}</setting>')
+    lines.append('</settings>\n')
+    (settings_dir / "settings.xml").write_text("\n".join(lines), encoding="utf-8")
+
+
+def configure_webserver(port: int = WEBSERVER_PORT, username: str = WEBSERVER_USERNAME,
+                         password: str = WEBSERVER_PASSWORD,
+                         extra_settings: dict[str, str] | None = None) -> None:
+    """Enable Kodi's built-in webserver (needed for JSON-RPC over HTTP)
+    inside the disposable profile only, with authentication always on.
+    extra_settings lets a caller fold in other core (guisettings.xml)
+    settings in the SAME write - e.g. {"lookandfeel.skin": AF3_SKIN_ID}
+    to make a skin active - since this only supports a fresh profile
+    and cannot be called twice. Fails closed: refuses if guisettings.xml
+    already exists, since a safe partial merge of an already-populated
+    core-settings file isn't implemented here - always call this
+    immediately after init()/reset(), before the disposable profile's
+    first launch."""
+    verify_isolation()
+    if not password:
+        raise RuntimeError("a webserver password is required")
+    if KODI_GUISETTINGS_FILE.exists():
+        raise RuntimeError(
+            "guisettings.xml already exists; configure_webserver() only "
+            "supports a fresh disposable profile - call it right after "
+            "init()/reset(), before the first launch")
+    KODI_USERDATA_DIR.mkdir(parents=True, exist_ok=True)
+    values = {
+        "services.webserver": "true",
+        "services.webserverport": str(int(port)),
+        "services.webserverauthentication": "true",
+        "services.webserverusername": username,
+        "services.webserverpassword": password,
+    }
+    if extra_settings:
+        values.update({key: str(value) for key, value in extra_settings.items()})
+    lines = ['<settings version="2">']
+    for key, value in values.items():
+        lines.append(f'    <setting id="{_xml_escape(key)}">{_xml_escape(str(value))}</setting>')
+    lines.append('</settings>\n')
+    KODI_GUISETTINGS_FILE.write_text("\n".join(lines), encoding="utf-8")
+
+
+def jsonrpc(method: str, params: dict | None = None, port: int = WEBSERVER_PORT,
+            username: str = WEBSERVER_USERNAME, password: str = WEBSERVER_PASSWORD,
+            timeout: float = 10.0) -> dict:
+    """POST a JSON-RPC 2.0 request to the disposable Kodi instance's
+    webserver. Always targets 127.0.0.1 (loopback) on the given port -
+    this harness has no concept of, and never accepts, a remote host."""
+    payload: dict = {"jsonrpc": "2.0", "id": 1, "method": method}
+    if params is not None:
+        payload["params"] = params
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{int(port)}/jsonrpc", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    request.add_header("Authorization", f"Basic {credentials}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"JSON-RPC request failed: {exc}") from exc
+
+
+def wait_for_ready(timeout: float = 20.0, **jsonrpc_kwargs) -> None:
+    """Poll JSONRPC.Ping until the disposable Kodi instance's webserver
+    actually answers, or raise RuntimeError once timeout seconds have
+    elapsed. A freshly launch()-ed or restarted Kodi process takes a few
+    seconds before its webserver is up - every live batch before this
+    function existed did this ad hoc with a fixed bash sleep/retry loop;
+    this replaces that guessed duration with a real, bounded poll that
+    fails loudly (not silently) if readiness is never reached, so a
+    caller can't mistake "still starting" for "actually ready"."""
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            response = jsonrpc("JSONRPC.Ping", **jsonrpc_kwargs)
+        except RuntimeError as exc:
+            last_error = exc
+        else:
+            if response.get("result") == "pong":
+                return
+            last_error = RuntimeError(
+                f"unexpected JSONRPC.Ping response: {response!r}")
+        time.sleep(0.5)
+    message = f"disposable Kodi's JSON-RPC did not become ready within {timeout}s"
+    if last_error is not None:
+        message += f": {last_error}"
+    raise RuntimeError(message)
+
+
+def enable_addon(addon_id: str, **jsonrpc_kwargs) -> dict:
+    """Enable an installed add-on via JSON-RPC. A freshly install()-ed
+    add-on is not enabled by default, and Addons.ExecuteAddon fails
+    against a disabled add-on (confirmed empirically 2026-09-10) - call
+    this before execute_addon() for a just-installed add-on."""
+    return jsonrpc("Addons.SetAddonEnabled",
+                    {"addonid": addon_id, "enabled": True}, **jsonrpc_kwargs)
+
+
+def enable_addons(addon_ids: list[str], **jsonrpc_kwargs) -> None:
+    """enable_addon() for each of addon_ids. A skin has the same
+    disabled-by-default problem as any other freshly copied add-on, and
+    additionally will not actually load while any of its own hard
+    dependencies are still disabled too - confirmed empirically
+    2026-09-10 activating skin.arctic.fuse.3, whose install_skin() copy
+    (and every add-on it depends on) starts disabled. Enabling them
+    live does not retroactively fix an already-failed boot-time skin
+    load; follow this with restart() for a clean load with everything
+    already enabled (confirmed empirically: a live
+    Settings.SetSettingValue afterward did not trigger a real skin
+    reload, but stopping and relaunching did)."""
+    for addon_id in addon_ids:
+        enable_addon(addon_id, **jsonrpc_kwargs)
+
+
+def _installed_addon_closure(seed_ids: list[str]) -> list[str]:
+    """The transitive closure of seed_ids' declared dependencies as
+    already present in the disposable profile (or Kodi's own system
+    bundle), including the seeds themselves - read-only, no copying, no
+    real-profile access. System-bundled add-ons (e.g.
+    script.module.pil) are excluded: Kodi ships them enabled, so they
+    never needed the enable_addons() step below. This mirrors
+    _copy_addon_closure()'s traversal but is safe to call any time
+    after install()/install_dependencies()/install_skin() have already
+    copied the files - it does not require the real profile to still be
+    reachable. Order preserved: seeds first, then each newly discovered
+    dependency."""
+    closure: list[str] = []
+    seen: set[str] = set()
+    pending = list(seed_ids)
+    while pending:
+        addon_id = pending.pop(0)
+        if addon_id in seen:
+            continue
+        seen.add(addon_id)
+        system_source = KODI_SYSTEM_ADDONS_DIR / addon_id
+        if system_source.is_dir():
+            pending.extend(_declared_dependencies(system_source))
+            continue
+        disposable_source = KODI_ADDONS_DIR / addon_id
+        if not disposable_source.is_dir():
+            raise RuntimeError(
+                "add-on is not installed in the disposable profile or "
+                f"Kodi's system bundle: {addon_id} - run install()/"
+                "install_dependencies()/install_skin() first")
+        closure.append(addon_id)
+        pending.extend(_declared_dependencies(disposable_source))
+    return closure
+
+
+def enable_closure(seed_ids: list[str], **jsonrpc_kwargs) -> list[str]:
+    """enable_addons() for the full transitive dependency closure of
+    seed_ids (each seed plus everything it declares as a dependency,
+    already installed in the disposable profile) in one deterministic
+    call - no need to separately enumerate/paste each dependency id.
+    Added 2026-09-10 after a human validation session hit
+    ModuleNotFoundError (dateutil, dropbox) launching Backup Pro
+    normally from Kodi's UI: install_dependencies()/install_skin() only
+    copy files, and every freshly copied add-on defaults to disabled -
+    the prior documented sequence required enabling each of the 10 (or
+    17, for the skin) dependency ids by hand, which is exactly the kind
+    of manual enumeration this replaces. Use
+    enable_closure(["script.backup.pro"]) and/or
+    enable_closure(["skin.arctic.fuse.3"]) instead."""
+    ids = _installed_addon_closure(seed_ids)
+    enable_addons(ids, **jsonrpc_kwargs)
+    return ids
+
+
+def prepare_validation(destination: Path | None = None, **jsonrpc_kwargs) -> dict:
+    """One-command Phase 9b human-validation preparation: reset the
+    disposable profile, install Backup Pro and Arctic Fuse 3 with their
+    full dependency closures, enable everything, and leave Kodi running
+    with AF3 active - so a human only has to do the genuinely subjective
+    visual/appearance confirmation, not rediscover/enable dependency ids
+    by hand (see docs/MAC_KODI_VALIDATION.md for the defect this
+    replaces). Composes only already-proven primitives in the documented
+    safe order - configure_webserver() before the first launch(),
+    enable_closure() only after wait_for_ready() confirms JSON-RPC is
+    actually up, and a real restart() (not a live settings change) so
+    AF3 activation and the enabled add-ons actually take effect. Returns
+    a small report a human can read directly; raises RuntimeError (fails
+    closed) on any verification failure rather than leaving Kodi running
+    in a state that looks ready but isn't."""
+    verify_isolation()
+    reset()
+    configure_webserver(extra_settings={"lookandfeel.skin": AF3_SKIN_ID})
+    install(PROJECT)
+    install_dependencies(PROJECT)
+    install_skin(AF3_SKIN_ID)
+    dest = destination if destination is not None else (ROOT / "backup-dest")
+    dest.mkdir(parents=True, exist_ok=True)
+    configure(ADDON_ID, {
+        "remote_path": str(dest),
+        "remote_selection": "0",
+        "backup_skin_config": "true",
+    })
+    launch()
+    wait_for_ready(**jsonrpc_kwargs)
+    enabled = enable_closure([ADDON_ID, AF3_SKIN_ID], **jsonrpc_kwargs)
+    stop()
+    launch()
+    wait_for_ready(**jsonrpc_kwargs)
+
+    backup_pro = jsonrpc("Addons.GetAddonDetails", {
+        "addonid": ADDON_ID, "properties": ["enabled"]}, **jsonrpc_kwargs)
+    skin = jsonrpc("Addons.GetAddonDetails", {
+        "addonid": AF3_SKIN_ID, "properties": ["enabled"]}, **jsonrpc_kwargs)
+    active_skin = jsonrpc("Settings.GetSettingValue",
+                           {"setting": "lookandfeel.skin"}, **jsonrpc_kwargs)
+    if not backup_pro.get("result", {}).get("addon", {}).get("enabled"):
+        raise RuntimeError(f"{ADDON_ID} is not enabled after prepare_validation()")
+    if not skin.get("result", {}).get("addon", {}).get("enabled"):
+        raise RuntimeError(f"{AF3_SKIN_ID} is not enabled after prepare_validation()")
+    active = active_skin.get("result", {}).get("value")
+    if active != AF3_SKIN_ID:
+        raise RuntimeError(
+            f"active skin is {active!r}, expected {AF3_SKIN_ID!r} after "
+            "prepare_validation()")
+
+    return {
+        "destination": str(dest),
+        "enabled": enabled,
+        "active_skin": active,
+        "webserver": {
+            "port": jsonrpc_kwargs.get("port", WEBSERVER_PORT),
+            "username": jsonrpc_kwargs.get("username", WEBSERVER_USERNAME),
+        },
+    }
+
+
+def execute_addon(addon_id: str, params: object = None, **jsonrpc_kwargs) -> dict:
+    """Invoke Addons.ExecuteAddon for addon_id via JSON-RPC - the
+    documented way to trigger a Program add-on non-interactively,
+    without a human selecting it from the main menu."""
+    rpc_params: dict = {"addonid": addon_id}
+    if params is not None:
+        rpc_params["params"] = params
+    return jsonrpc("Addons.ExecuteAddon", rpc_params, **jsonrpc_kwargs)
+
+
+def _repository_addon_ids(**jsonrpc_kwargs) -> list[str]:
+    """The ids of every add-on Kodi currently reports as an installed
+    repository (type xbmc.addon.repository) - used to fail closed
+    around install_authorized_network_package() if anything other than
+    the official Kodi repository is ever present. This harness never
+    copies a third-party repository into a disposable profile, so this
+    check is a cheap, structural way to verify "official source only"
+    given Kodi's JSON-RPC API exposes no direct install-provenance
+    property (confirmed empirically 2026-09-10 via a full, unfiltered
+    JSONRPC.Introspect - see docs/MAC_KODI_VALIDATION.md)."""
+    result = jsonrpc("Addons.GetAddons",
+                      {"type": "xbmc.addon.repository", "properties": ["enabled"]},
+                      **jsonrpc_kwargs)
+    if "error" in result:
+        raise RuntimeError(f"could not list repositories: {result['error']}")
+    return [a["addonid"] for a in result.get("result", {}).get("addons", []) or []]
+
+
+def _write_installer_addon() -> None:
+    """Write a minimal, throwaway, harness-owned script add-on into the
+    disposable profile whose only job is to call Kodi's own
+    InstallAddon() builtin for one caller-given add-on id via
+    xbmc.executebuiltin(). This is not Backup Pro production code and
+    downloads nothing itself - it exists only to reach InstallAddon(),
+    Kodi's own repository/add-on installation mechanism, through the
+    already-proven Addons.ExecuteAddon JSON-RPC path, since Kodi's
+    JSON-RPC API has no direct "install from repository" method
+    (confirmed empirically 2026-09-10: a full, unfiltered
+    JSONRPC.Introspect lists no such method anywhere in the API)."""
+    verify_isolation()
+    destination = KODI_ADDONS_DIR / INSTALLER_ADDON_ID
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    (destination / "addon.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<addon id="{INSTALLER_ADDON_ID}" name="kodi-test installer" '
+        'version="1.0.0" provider-name="kodi-test">\n'
+        '  <requires>\n'
+        '    <import addon="xbmc.python" version="3.0.0"/>\n'
+        '  </requires>\n'
+        '  <extension point="xbmc.python.script" library="default.py">\n'
+        '    <provides>executable</provides>\n'
+        '  </extension>\n'
+        '  <extension point="xbmc.addon.metadata">\n'
+        '    <summary lang="en_GB">Disposable test-harness helper - not for real use</summary>\n'
+        '  </extension>\n'
+        '</addon>\n',
+        encoding="utf-8")
+    (destination / "default.py").write_text(
+        "import sys\n"
+        "import xbmc\n"
+        "for arg in sys.argv[1:]:\n"
+        "    if arg.startswith('addon='):\n"
+        "        xbmc.executebuiltin('InstallAddon(%s)' % arg.split('=', 1)[1])\n",
+        encoding="utf-8")
+
+
+def install_authorized_network_package(addon_id: str, **jsonrpc_kwargs) -> dict:
+    """Install one specific, human-pre-authorized add-on from Kodi's
+    official repository, through Kodi's own InstallAddon() builtin (via
+    _write_installer_addon() + Addons.ExecuteAddon) - not custom
+    HTTP/ZIP downloading. Fails closed: refuses any add-on id not on
+    the explicit AUTHORIZED_NETWORK_PACKAGES allowlist, and refuses if
+    any repository other than OFFICIAL_REPOSITORY_ID is present/enabled
+    in the disposable profile, checked both before triggering the
+    install and after, before this function will report success. Only
+    triggers the install; does not itself wait for or verify
+    completion - Kodi installs asynchronously, so poll
+    Addons.GetAddonDetails separately for the actual result. See
+    docs/MAC_KODI_VALIDATION.md -> "Authorized
+    network-install capability" for the human-approved scope this
+    enforces."""
+    if addon_id not in AUTHORIZED_NETWORK_PACKAGES:
+        raise RuntimeError(
+            f"{addon_id} is not on the authorized network-install allowlist "
+            f"({sorted(AUTHORIZED_NETWORK_PACKAGES)}) - a new human decision "
+            "is required before installing anything else")
+    verify_isolation()
+    unexpected = [r for r in _repository_addon_ids(**jsonrpc_kwargs)
+                  if r != OFFICIAL_REPOSITORY_ID]
+    if unexpected:
+        raise RuntimeError(
+            "refusing to install: unexpected repository present before "
+            f"install: {unexpected}")
+    _write_installer_addon()
+    enabled = enable_addon(INSTALLER_ADDON_ID, **jsonrpc_kwargs)
+    if "error" in enabled:
+        raise RuntimeError(f"could not enable the installer add-on: {enabled['error']}")
+    result = execute_addon(INSTALLER_ADDON_ID, [f"addon={addon_id}"], **jsonrpc_kwargs)
+    if "error" in result:
+        raise RuntimeError(f"failed to trigger the install: {result['error']}")
+    unexpected = [r for r in _repository_addon_ids(**jsonrpc_kwargs)
+                  if r != OFFICIAL_REPOSITORY_ID]
+    if unexpected:
+        raise RuntimeError(
+            "refusing to trust the install: unexpected repository appeared "
+            f"after triggering it: {unexpected}")
+    return result
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("verify", "status", "init", "reset", "launch", "stop", "restart"):
+        sub.add_parser(name)
+    p = sub.add_parser("install")
+    p.add_argument("source", nargs="?", type=Path, default=PROJECT)
+    p = sub.add_parser("install-dependencies")
+    p.add_argument("source", nargs="?", type=Path, default=PROJECT)
+    p = sub.add_parser("install-skin")
+    p.add_argument("skin_id", nargs="?", default=AF3_SKIN_ID)
+    p = sub.add_parser("configure")
+    p.add_argument("addon_id")
+    p.add_argument("settings", nargs="+", help="key=value pairs")
+    p = sub.add_parser("enable-webserver")
+    p.add_argument("--skin", default=None,
+                    help="also set this skin as active (lookandfeel.skin)")
+    p = sub.add_parser("jsonrpc")
+    p.add_argument("method")
+    p.add_argument("params", nargs="?", type=json.loads, default=None,
+                    help="JSON object, e.g. '{\"addonid\":\"script.backup.pro\"}'")
+    p = sub.add_parser("enable-addon")
+    p.add_argument("addon_id", nargs="?", default=ADDON_ID)
+    p = sub.add_parser("enable-addons")
+    p.add_argument("addon_ids", nargs="+")
+    p = sub.add_parser("enable-closure")
+    p.add_argument("addon_ids", nargs="+",
+                    help="seed addon id(s), e.g. script.backup.pro and/or "
+                         "skin.arctic.fuse.3 - their full dependency "
+                         "closure is computed and enabled in one call")
+    p = sub.add_parser("execute-addon")
+    p.add_argument("addon_id", nargs="?", default=ADDON_ID)
+    p.add_argument("params", nargs="*", help="key=value pairs forwarded as sys.argv")
+    p = sub.add_parser("install-network-package")
+    p.add_argument("addon_id")
+    p = sub.add_parser("prepare-validation")
+    p.add_argument("--destination", type=Path, default=None,
+                    help="local backup destination (default: "
+                         "<disposable-root>/backup-dest)")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "verify": result = verify_isolation()
+        elif args.command == "status": result = status()
+        elif args.command == "init": reset(); result = status()
+        elif args.command == "reset": reset(); result = status()
+        elif args.command == "launch": launch(); result = status()
+        elif args.command == "stop": stop(); result = status()
+        elif args.command == "restart": stop(); launch(); result = status()
+        elif args.command == "install": install(args.source); result = status()
+        elif args.command == "install-dependencies":
+            result = {"installed": install_dependencies(args.source)}
+        elif args.command == "install-skin":
+            result = {"installed": install_skin(args.skin_id)}
+        elif args.command == "configure":
+            values = dict(item.split("=", 1) for item in args.settings)
+            configure(args.addon_id, values)
+            result = status()
+        elif args.command == "enable-webserver":
+            extra = {"lookandfeel.skin": args.skin} if args.skin else None
+            configure_webserver(extra_settings=extra)
+            result = status()
+        elif args.command == "jsonrpc":
+            result = jsonrpc(args.method, args.params)
+        elif args.command == "enable-addon":
+            result = enable_addon(args.addon_id)
+        elif args.command == "enable-addons":
+            enable_addons(args.addon_ids)
+            result = {"enabled": args.addon_ids}
+        elif args.command == "enable-closure":
+            result = {"enabled": enable_closure(args.addon_ids)}
+        elif args.command == "install-network-package":
+            result = install_authorized_network_package(args.addon_id)
+        elif args.command == "prepare-validation":
+            result = prepare_validation(args.destination)
+        else:
+            result = execute_addon(args.addon_id, args.params or None)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"kodi-test: refused: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

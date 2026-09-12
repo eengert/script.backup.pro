@@ -3,3 +3,4 @@
 .project
 .pydevproject
 /dist/
+/.kodi-test/
