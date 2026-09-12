@@ -949,3 +949,7 @@ msgstr ""
 msgctxt "#30236"
 msgid "Archive size"
 msgstr ""
+
+msgctxt "#30237"
+msgid "Backup Pro detected an add-on change in this Kodi session. On Apple TV, Kodi may temporarily expose stale add-on settings after add-on changes. Restart Kodi before using Backup Pro."
+msgstr ""

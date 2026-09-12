@@ -14,8 +14,17 @@ class BackupScheduler:
     next_run_path = None
     restore_point = None
 
-    def __init__(self):
+    def __init__(self, settings_guard=None):
+        self.settings_guard = settings_guard
         self.monitor = UpdateMonitor(update_method=self.settingsChanged)
+        if (self.settings_guard is not None
+                and not self.settings_guard.initialize()):
+            # Keep the service alive so its process-local guard remains
+            # available to Program invocations, but do not read settings or
+            # resume/schedule work in an unsafe tvOS session.
+            self.enabled = False
+            self.next_run_path = None
+            return
         self.enabled = utils.getSettingBool("enable_scheduler")
         self.next_run_path = xbmcvfs.translatePath(utils.data_dir()) + 'next_run.txt'
 
@@ -32,7 +41,16 @@ class BackupScheduler:
         if(self.enabled):
 
             # sleep for 2 minutes so Kodi can start and time can update correctly
-            xbmc.Monitor().waitForAbort(120)
+            # Poll during the startup grace period too. A single blocking
+            # 120-second wait would leave an avoidable add-on-manager blind
+            # spot immediately after Kodi starts.
+            for _unused in range(120):
+                if self.monitor.waitForAbort(1):
+                    return
+                if (self.settings_guard is not None
+                        and not self.settings_guard.poll(force=True)):
+                    self.enabled = False
+                    return
 
             nr = 0
             if(xbmcvfs.exists(self.next_run_path)):
@@ -65,6 +83,12 @@ class BackupScheduler:
 
         while(not self.monitor.abortRequested()):
 
+            if (self.settings_guard is not None
+                    and not self.settings_guard.poll()):
+                self.enabled = False
+                xbmc.sleep(500)
+                continue
+
             if(self.enabled):
                 # scheduler is still on
                 now = time.time()
@@ -88,6 +112,13 @@ class BackupScheduler:
         del self.monitor
 
     def doScheduledBackup(self, progress_mode):
+        guard = getattr(self, 'settings_guard', None)
+        if guard is not None and not guard.allow_operation():
+            utils.log('scheduled backup blocked: Kodi restart required',
+                      xbmc.LOGWARNING)
+            utils.showNotification(utils.getString(30237))
+            return False
+
         if(progress_mode != 2):
             utils.showNotification(utils.getString(30053))
 
@@ -133,6 +164,10 @@ class BackupScheduler:
                 utils.showNotification(utils.getString(30081) + " " + utils.getRegionalTimestamp(datetime.fromtimestamp(self.next_run), ['dateshort', 'time']))
 
     def settingsChanged(self):
+        guard = getattr(self, 'settings_guard', None)
+        if (guard is not None
+                and not guard.rebaseline_settings()):
+            return
         current_enabled = utils.getSettingBool("enable_scheduler")
 
         if(current_enabled and not self.enabled):

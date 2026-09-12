@@ -2,6 +2,7 @@ import xbmcgui
 import xbmcvfs
 import resources.lib.utils as utils
 from resources.lib.backup import XbmcBackup
+from resources.lib.tvos_settings_guard import TvOSSettingsGuard
 from resources.lib.authorizers import DropboxAuthorizer
 from resources.lib.advanced_editor import AdvancedBackupEditor
 from resources.lib.help_content import build_help_text
@@ -97,6 +98,14 @@ if("mode" in params):
     elif(params['mode'] == 'launcher'):
         mode = LAUNCHER
 
+# On tvOS, Kodi can expose stale/default add-on settings after any live
+# add-on-manager mutation. Gate before XbmcBackup construction because its
+# constructor reads destination and staging settings immediately.
+settingsGuard = TvOSSettingsGuard()
+if not settingsGuard.allow_operation():
+    xbmcgui.Dialog().ok(utils.getString(30010), utils.getString(30237))
+    raise SystemExit(0)
+
 # a pending Arctic Fuse 3 restore takes precedence over every other Program
 # action, including reading which mode was requested. If it is resolved (or
 # never existed), fall through to normal Program behavior below.
@@ -126,7 +135,11 @@ if(mode != -1):
 
     if(mode == SETTINGS):
         # open the settings dialog
-        utils.openSettings()
+        settingsGuard.begin_settings_edit()
+        try:
+            utils.openSettings()
+        finally:
+            settingsGuard.finish_settings_edit()
     elif(mode == ADVANCED_EDITOR and utils.getSettingInt('backup_selection_type') == 1):
         # open the advanced editor but only if in advanced mode
         editor = AdvancedBackupEditor()

@@ -94,6 +94,9 @@ class FakeUtils:
     def setSetting(self, name, value):
         self.settings_written[name] = value
 
+    def log(self, _message, _level=0):
+        pass
+
 
 class SchedulerBackgroundDeferralTests(unittest.TestCase):
     def _run(self, pending, remote_configured, progress_mode=1,
@@ -156,6 +159,24 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
             pending=False, remote_configured=True, progress_mode=1)
 
         self.assertIn('string:30053', fake_utils.notifications)
+
+    def test_unsafe_tvos_session_blocks_scheduled_backup(self):
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.return_value = False
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup) as ctor, \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertFalse(result)
+        ctor.assert_not_called()
+        self.assertIn('string:30237', fake_utils.notifications)
 
 
 class RefusingDialog:

@@ -4,49 +4,54 @@ import xbmcaddon
 import xbmcvfs
 
 __addon_id__ = 'script.backup.pro'
-__Addon = xbmcaddon.Addon(__addon_id__)
+
+
+def _addon():
+    # Kodi can rebuild its add-on objects after add-on-manager activity.
+    # Never retain one wrapper for the lifetime of the service interpreter.
+    return xbmcaddon.Addon(__addon_id__)
 
 
 def data_dir():
-    return __Addon.getAddonInfo('profile')
+    return _addon().getAddonInfo('profile')
 
 
 def addon_dir():
-    return __Addon.getAddonInfo('path')
+    return _addon().getAddonInfo('path')
 
 
 def openSettings():
-    __Addon.openSettings()
+    _addon().openSettings()
 
 
 def log(message, loglevel=xbmc.LOGDEBUG):
-    xbmc.log(__addon_id__ + "-" + __Addon.getAddonInfo('version') + ": " + message, level=loglevel)
+    xbmc.log(__addon_id__ + "-" + _addon().getAddonInfo('version') + ": " + message, level=loglevel)
 
 
 def showNotification(message):
-    xbmcgui.Dialog().notification(getString(30010), message, time=4000, icon=xbmcvfs.translatePath(__Addon.getAddonInfo('path') + "/resources/images/icon-v2.png"))
+    xbmcgui.Dialog().notification(getString(30010), message, time=4000, icon=xbmcvfs.translatePath(_addon().getAddonInfo('path') + "/resources/images/icon-v2.png"))
 
 
 def getSetting(name):
-    return __Addon.getSetting(name)
+    return _addon().getSetting(name)
 
 def getSettingStringStripped(name):
-    return __Addon.getSettingString(name).strip()
+    return _addon().getSettingString(name).strip()
 
 def getSettingBool(name):
-    return bool(__Addon.getSettingBool(name))
+    return bool(_addon().getSettingBool(name))
 
 
 def getSettingInt(name):
-    return __Addon.getSettingInt(name)
+    return _addon().getSettingInt(name)
 
 
 def setSetting(name, value):
-    __Addon.setSetting(name, value)
+    _addon().setSetting(name, value)
 
 
 def getString(string_id):
-    return __Addon.getLocalizedString(string_id)
+    return _addon().getLocalizedString(string_id)
 
 
 def getRegionalTimestamp(date_time, dateformat=['dateshort']):

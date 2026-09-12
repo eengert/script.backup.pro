@@ -24,6 +24,7 @@ from resources.lib.archive import (
     verify_manifest_files,
     verify_zip_archive,
 )
+from resources.lib.tvos_settings_guard import MARKER_NAME
 from resources.lib.planning import (
     FilePlanner,
     TMDB_HELPER_ID,
@@ -1325,6 +1326,16 @@ class XbmcBackup:
         self._automatic_exclusion_rules = []
         self._automatic_exclusion_rules.extend(
             getattr(self, '_skin_managed_exclusions', []))
+        # This process/session marker is device-local safety state. Restoring
+        # another process's PID/version marker could defeat restart detection,
+        # so it must never enter an archive.
+        self._automatic_exclusion_rules.append({
+            'type': 'exclude',
+            'path': xbmcvfs.translatePath(
+                utils.data_dir() + MARKER_NAME),
+            'adapter': 'script.backup.pro.settings-safety',
+            'reason': 'Device-local tvOS settings-safety session marker',
+        })
         if not utils.getSettingBool('exclude_tmdbh_image_cache'):
             return self._automatic_exclusion_rules
 

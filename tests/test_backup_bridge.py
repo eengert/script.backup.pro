@@ -537,13 +537,40 @@ class BackupBridgeTests(unittest.TestCase):
                 'adapter': 'skin.arctic.fuse.3', 'reason': 'managed',
             }]
             exclusions = instance._automaticExclusions()
-            self.assertEqual(5, len(exclusions))
+            self.assertEqual(6, len(exclusions))
             self.assertEqual('/profile/skin', exclusions[0]['path'])
             self.assertEqual({
                 'blur_v3', 'crop_v2', 'desaturate_v2', 'colors_v2',
-            }, {item['path'].rsplit('/', 1)[-1] for item in exclusions[1:]})
+            }, {item['path'].rsplit('/', 1)[-1]
+                for item in exclusions[2:]})
+            self.assertTrue(exclusions[1]['path'].endswith(
+                'settings-safety-session.xml'))
         finally:
             backup_module.utils.getSettingBool = original_setting
+
+    def test_settings_safety_marker_is_always_excluded(self):
+        original_setting = backup_module.utils.getSettingBool
+        original_data_dir = backup_module.utils.data_dir
+        original_translate = backup_module.xbmcvfs.translatePath
+        try:
+            backup_module.utils.getSettingBool = lambda _name: False
+            backup_module.utils.data_dir = lambda: (
+                'special://profile/addon_data/script.backup.pro/')
+            backup_module.xbmcvfs.translatePath = lambda path: path
+            instance = object.__new__(XbmcBackup)
+            instance._automatic_exclusion_rules = None
+            instance._skin_managed_exclusions = []
+
+            exclusions = instance._automaticExclusions()
+
+            self.assertEqual(1, len(exclusions))
+            self.assertEqual(
+                'special://profile/addon_data/script.backup.pro/'
+                'settings-safety-session.xml', exclusions[0]['path'])
+        finally:
+            backup_module.utils.getSettingBool = original_setting
+            backup_module.utils.data_dir = original_data_dir
+            backup_module.xbmcvfs.translatePath = original_translate
 
     def test_stages_af3_snapshot_and_cleans_it_without_touching_profile(self):
         original_data_dir = backup_module.utils.data_dir
@@ -1464,7 +1491,8 @@ class SkinSwitchConfirmationTests(unittest.TestCase):
         backup_module.xbmc.getSkinDir = fake_getskindir
         backup_module.xbmcaddon.Addon = lambda _addon_id: type('A', (), {
             'getAddonInfo': lambda self, name: (
-                'Arctic Fuse 3' if name == 'name' else '')})()
+                'Arctic Fuse 3' if name == 'name' else ''),
+            'getLocalizedString': lambda self, string_id: str(string_id)})()
         backup_module.xbmcgui.Dialog = lambda: type('D', (), {
             'notification': lambda self, _title, message, *_a, **_k:
                 messages.append(message)})()
