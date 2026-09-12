@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.17
+
+### Fixed
+
+- `remoteConfigured()` failed to detect an unconfigured/empty backup
+  destination because an empty `remote_path`/`remote_path_2` setting
+  is normalized (by `Vfs.clean_path()`) to `"/"`, which the guard
+  mistook for a valid destination. Backup Pro no longer treats a
+  normalized `/` as configured; the raw, unnormalized setting is now
+  checked instead.
+- Backup and Restore now stop cleanly with the existing "destination
+  not configured" message before any remote mkdir/copy/restore
+  operation when no destination is set, instead of attempting to
+  create a path at the filesystem root.
+
 ## Version 0.9.16
 
 ### Fixed
