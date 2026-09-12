@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.15
+
+### Fixed
+
+- Backup Pro no longer fails to open immediately after a fresh installation
+  when Kodi has not yet created the add-on's profile directory. Read-only
+  pending-restore inspection treats that normal first-run condition as no
+  pending restore; write-side directory validation and symlink protections
+  are unchanged.
+
 ## Version 0.9.14
 
 ### Fixed
