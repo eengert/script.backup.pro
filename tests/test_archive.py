@@ -14,6 +14,7 @@ from resources.lib.archive import (
     ArchiveValidationError,
     build_manifest,
     collapse_identical_case_collisions,
+    _hash_local_file,
     load_manifest,
     normalize_member_path,
     sha256_reader,
@@ -238,6 +239,140 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(4 / 1024.0, summary['included_kib'])
         self.assertEqual(4 / 1024.0, summary['excluded_kib'])
         self.assertEqual('casefold_alias', summary['exclusions'][0]['adapter'])
+
+    def _mismatched_vfs_hash_file(self, contents, root='/profile/addons/'):
+        # Simulates the tvOS bug: the primary (VFS) hash disagrees between
+        # two same-size case-variant aliases even though their real bytes
+        # are identical.
+        def hash_file(path):
+            key = path[len(root):]
+            return 'vfs-fingerprint-of-' + key, len(contents[key])
+        return hash_file
+
+    def test_vfs_disagreement_collapses_when_local_read_proves_identical(self):
+        contents = {'Example/File.txt': b'identical', 'example/file.TXT': b'identical'}
+        groups = self._collision_groups(
+            ['example/file.TXT', 'Example/File.txt'], contents)
+
+        filtered, exclusions = collapse_identical_case_collisions(
+            groups,
+            self._mismatched_vfs_hash_file(contents),
+            local_hash_file=lambda path: (
+                hashlib.sha256(
+                    contents[path[len('/profile/addons/'):]]).hexdigest(),
+                len(contents[path[len('/profile/addons/'):]])))
+
+        self.assertEqual(
+            ['/profile/addons/Example/File.txt'],
+            [item['file'] for item in filtered[0]['files']])
+        self.assertEqual(1, len(exclusions))
+
+    def test_vfs_disagreement_fails_closed_when_local_bytes_differ(self):
+        contents = {'A.txt': b'aaaaa', 'a.TXT': b'bbbbb'}  # same size, real diff
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+
+        with self.assertRaises(ArchiveValidationError) as raised:
+            collapse_identical_case_collisions(
+                groups,
+                self._mismatched_vfs_hash_file(contents),
+                local_hash_file=lambda path: (
+                    hashlib.sha256(
+                        contents[path[len('/profile/addons/'):]]).hexdigest(),
+                    len(contents[path[len('/profile/addons/'):]])))
+
+        self.assertIn('case-colliding source files differ',
+                       str(raised.exception))
+
+    def test_vfs_disagreement_fails_closed_when_fallback_unavailable(self):
+        contents = {'Example/File.txt': b'identical', 'example/file.TXT': b'identical'}
+        groups = self._collision_groups(
+            ['example/file.TXT', 'Example/File.txt'], contents)
+
+        with self.assertRaises(ArchiveValidationError):
+            collapse_identical_case_collisions(
+                groups,
+                self._mismatched_vfs_hash_file(contents),
+                local_hash_file=None)
+
+    def test_vfs_disagreement_fails_closed_when_fallback_not_local(self):
+        # The default local_hash_file (native filesystem access) cannot
+        # resolve these synthetic, nonexistent test paths, so it must raise
+        # and the caller must fail closed rather than treat that as safe.
+        contents = {'Example/File.txt': b'identical', 'example/file.TXT': b'identical'}
+        groups = self._collision_groups(
+            ['example/file.TXT', 'Example/File.txt'], contents)
+
+        with self.assertRaises(ArchiveValidationError):
+            collapse_identical_case_collisions(
+                groups,
+                self._mismatched_vfs_hash_file(contents),
+                local_hash_file=_hash_local_file)
+
+    def test_vfs_disagreement_fails_closed_when_fallback_errors(self):
+        contents = {'Example/File.txt': b'identical', 'example/file.TXT': b'identical'}
+        groups = self._collision_groups(
+            ['example/file.TXT', 'Example/File.txt'], contents)
+
+        def broken(_path):
+            raise IOError('device unavailable')
+
+        with self.assertRaises(ArchiveValidationError):
+            collapse_identical_case_collisions(
+                groups,
+                self._mismatched_vfs_hash_file(contents),
+                local_hash_file=broken)
+
+    def test_fallback_not_consulted_when_vfs_hashes_already_agree(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+
+        def must_not_be_called(_path):
+            self.fail('local fallback must not run on the agreeing fast path')
+
+        filtered, exclusions = collapse_identical_case_collisions(
+            groups, lambda path: (
+                hashlib.sha256(
+                    contents[path[len('/profile/addons/'):]]).hexdigest(),
+                len(contents[path[len('/profile/addons/'):]])),
+            local_hash_file=must_not_be_called)
+
+        self.assertEqual(1, len(exclusions))
+
+    def test_vfs_disagreement_with_three_aliases_requires_all_local_matches(self):
+        contents = {
+            'ABC.txt': b'same', 'Abc.txt': b'same', 'abc.TXT': b'different',
+        }
+        groups = self._collision_groups(list(contents), contents)
+
+        with self.assertRaises(ArchiveValidationError):
+            collapse_identical_case_collisions(
+                groups,
+                self._mismatched_vfs_hash_file(
+                    {k: b'same' for k in contents}),  # same size for all
+                local_hash_file=lambda path: (
+                    hashlib.sha256(
+                        contents[path[len('/profile/addons/'):]]).hexdigest(),
+                    len(contents[path[len('/profile/addons/'):]])))
+
+    def test_real_local_fallback_reads_actual_bytes_from_disk(self):
+        tmpdir = tempfile.mkdtemp()
+        upper = os.path.join(tmpdir, 'UP.txt')
+        lower = os.path.join(tmpdir, 'up.txt')
+        with open(upper, 'wb') as handle:
+            handle.write(b'payload')
+        with open(lower, 'wb') as handle:
+            handle.write(b'payload')
+
+        checksum_a, size_a = _hash_local_file(upper)
+        checksum_b, size_b = _hash_local_file(lower)
+        self.assertEqual(size_a, size_b)
+        self.assertEqual(checksum_a, checksum_b)
+        self.assertEqual(hashlib.sha256(b'payload').hexdigest(), checksum_a)
+
+        with self.assertRaises(ArchiveValidationError):
+            _hash_local_file('smb://example/share/file.txt')
+        with self.assertRaises(ArchiveValidationError):
+            _hash_local_file(os.path.join(tmpdir, 'missing.txt'))
 
     def test_builds_portable_sorted_file_records(self):
         contents = {

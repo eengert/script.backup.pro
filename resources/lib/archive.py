@@ -2,6 +2,7 @@ from __future__ import unicode_literals
 
 import hashlib
 import json
+import os
 import re
 import stat
 import zipfile
@@ -363,7 +364,46 @@ def build_manifest(groups, hash_file, metadata=None, check_cancel=None):
     return validate_manifest(document)
 
 
-def collapse_identical_case_collisions(groups, hash_file):
+def _hash_local_file(path):
+    """Independently hash a path as a native local file, bypassing Kodi VFS.
+
+    Used only as a fallback when the VFS-based hash disagrees for
+    same-size case-colliding aliases (observed on tvOS, where
+    ``xbmcvfs.File``/``xbmcvfs.translatePath`` produced different
+    fingerprints for two case-variant paths that are byte-identical on
+    disk). Raises if the path is not a real, directly-openable local file
+    (e.g. a remote/VFS URL), so the caller can fail closed.
+    """
+    if '://' in path or not os.path.isfile(path):
+        raise ArchiveValidationError(
+            'path is not a native local file: ' + path)
+    with open(path, 'rb') as source:
+        return sha256_reader(lambda size: source.read(size))
+
+
+def _confirm_identical_via_local_read(measured, local_hash_file):
+    """Re-check same-size, VFS-disagreeing aliases via independent I/O.
+
+    Returns True only if every alias is readable as a native local file and
+    every independently computed fingerprint agrees. Any read failure,
+    unavailable fallback, or disagreement returns False, so the caller
+    keeps failing closed.
+    """
+    if local_hash_file is None:
+        return False
+    local_fingerprints = set()
+    for alias, _checksum, _size in measured:
+        try:
+            local_checksum, local_size = local_hash_file(
+                alias['source_path'])
+        except Exception:
+            return False
+        local_fingerprints.add((local_checksum, int(local_size)))
+    return len(local_fingerprints) == 1
+
+
+def collapse_identical_case_collisions(
+        groups, hash_file, local_hash_file=_hash_local_file):
     """Remove byte-identical aliases of one case-insensitive archive path.
 
     Kodi profiles on case-sensitive filesystems can retain paths that differ
@@ -371,8 +411,18 @@ def collapse_identical_case_collisions(groups, hash_file):
     case-insensitive filesystem. Select the lexicographically smallest
     normalized archive path (then source path as a tie-breaker), independent
     of enumeration order, but only when every candidate has the same size and
-    SHA-256. Differing candidates remain a hard error. The final manifest
-    validator deliberately remains a separate fail-closed boundary.
+    SHA-256. Differing candidates remain a hard error.
+
+    If the primary (VFS) hashes disagree but every candidate has the same
+    byte length, a same-size disagreement is not by itself proof the files
+    differ — it can also be a platform VFS read quirk. In that case only,
+    ``local_hash_file`` (a native filesystem read, independent of the VFS
+    path that produced the disagreement) is used to double-check; the
+    aliases are only collapsed if that independent read proves them
+    byte-identical. Any error, unavailability, non-local path, or
+    disagreement in that check still fails closed. The final manifest
+    validator deliberately remains a separate fail-closed boundary and is
+    unaffected by this fallback.
     """
     filtered_groups = []
     all_exclusions = []
@@ -410,11 +460,18 @@ def collapse_identical_case_collisions(groups, hash_file):
             fingerprints = {(checksum, size)
                             for _alias, checksum, size in measured}
             if len(fingerprints) != 1:
-                details = '; '.join(
-                    '%s -> %s' % (alias['source_path'], alias['archive_path'])
-                    for alias, _checksum, _size in measured)
-                raise ArchiveValidationError(
-                    'case-colliding source files differ: ' + details)
+                sizes = {size for _alias, _checksum, size in measured}
+                confirmed_identical = (
+                    len(sizes) == 1
+                    and _confirm_identical_via_local_read(
+                        measured, local_hash_file))
+                if not confirmed_identical:
+                    details = '; '.join(
+                        '%s -> %s' % (
+                            alias['source_path'], alias['archive_path'])
+                        for alias, _checksum, _size in measured)
+                    raise ArchiveValidationError(
+                        'case-colliding source files differ: ' + details)
 
             kept = measured[0][0]
             for alias, _checksum, size in measured[1:]:
