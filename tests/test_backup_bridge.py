@@ -127,6 +127,26 @@ class FakeRecoveryDialog:
         self.calls.append(('notification', title, message))
 
 
+class FakeProgress:
+    """A progress dialog stub that records close() calls, so a shared
+    events list can prove ordering against another recorder (e.g. the
+    success/failure Dialog().ok() calls) rather than just presence."""
+
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.closed = False
+
+    def checkCancel(self):
+        return False
+
+    def updateProgress(self, _percent, _message=None):
+        pass
+
+    def close(self):
+        self.closed = True
+        self.events.append('progress_closed')
+
+
 class RefusingDialog:
     """A Dialog that fails the test if background code ever shows UI."""
 
@@ -754,6 +774,59 @@ class BackupBridgeTests(unittest.TestCase):
             ['/profile/bad1.txt', '/profile/bad2.txt'],
             instance._copy_failures)
 
+    def test_copy_files_progress_message_override_pins_percent_not_bytes(self):
+        # regression guard, 2026-09-12: a real 444MB compressed backup
+        # showed a frozen "444 MB remaining" progress dialog for the
+        # entire final copy-to-destination step, because that step
+        # copies exactly one (already-compressed) file and the ordinary
+        # per-file message is only computed once, before the single
+        # blocking copy runs, then never updated again. When a caller
+        # passes progress_message, _copyFiles must show that fixed,
+        # honest message and pin the percent rather than deriving a
+        # byte countdown from transferLeft that can never move.
+        instance = object.__new__(XbmcBackup)
+        updates = []
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, percent, message=None:
+                updates.append((percent, message)),
+        })()
+        instance.transferSize = 444 * 1024 * 1024
+        instance.transferLeft = instance.transferSize
+
+        class Dest:
+            root_path = '/backup/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+            def put(self, _source_file, _dest_file):
+                return True
+
+        class Source:
+            root_path = '/tmp/'
+
+        files = [{'file': '/tmp/20260912.zip', 'size': instance.transferSize,
+                  'is_dir': False}]
+
+        result = instance._copyFiles(
+            files, Source(), Dest(),
+            progress_message='Compressing backup into ZIP archive...')
+
+        self.assertTrue(result)
+        self.assertEqual(1, len(updates))
+        percent, message = updates[0]
+        self.assertEqual('Compressing backup into ZIP archive...', message)
+        self.assertNotIn('remaining', message)
+        # a fixed, non-zero percent (not derived from the untouched
+        # transferLeft, which would show 0%) -- the bar stays put
+        # instead of a fake countdown that never advances.
+        self.assertEqual(instance._INDETERMINATE_PERCENT, percent)
+        self.assertGreater(percent, 0)
+
     def test_backup_failure_message_reports_reason_and_failed_files(self):
         instance = object.__new__(XbmcBackup)
         instance._failure_reason = 'backup verification failed: checksum mismatch'
@@ -799,10 +872,12 @@ class BackupBridgeTests(unittest.TestCase):
         instance.remote_vfs = Remote()
         instance._copy_failures = ['/profile/addon_data/cache.db']
         instance._failure_reason = None
+        events = []
+        instance.progressBar = FakeProgress(events)
         dialogs = []
         original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
         backup_module.xbmcgui.Dialog = lambda: type('D', (), {
-            'ok': lambda self, title, message: dialogs.append(
+            'ok': lambda self, title, message: events.append('dialog_shown') or dialogs.append(
                 (title, message)) or True})()
         try:
             result = instance._finalizeBackup(
@@ -818,6 +893,10 @@ class BackupBridgeTests(unittest.TestCase):
         self.assertEqual(1, len(dialogs))
         self.assertIn('/profile/addon_data/cache.db', dialogs[0][1])
         self.assertIn('30192', dialogs[0][1])
+        # the progress dialog must be closed before the failure dialog is
+        # shown, not left open underneath it.
+        self.assertTrue(instance.progressBar.closed)
+        self.assertEqual(['progress_closed', 'dialog_shown'], events)
 
     def test_compressed_readback_requires_exact_remote_copy(self):
         instance = object.__new__(XbmcBackup)
@@ -849,6 +928,7 @@ class BackupBridgeTests(unittest.TestCase):
 
         instance = object.__new__(XbmcBackup)
         instance.remote_vfs = Remote()
+        instance.progressBar = FakeProgress()
         rotations = []
         instance._rotateBackups = lambda: rotations.append(True)
         original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
@@ -906,10 +986,12 @@ class BackupBridgeTests(unittest.TestCase):
             ],
         }
         instance._skin_snapshot_metadata = {'appearance': {}}
+        events = []
+        instance.progressBar = FakeProgress(events)
         dialogs = []
         original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
         backup_module.xbmcgui.Dialog = lambda: type('D', (), {
-            'ok': lambda self, title, message: dialogs.append(
+            'ok': lambda self, title, message: events.append('dialog_shown') or dialogs.append(
                 (title, message)) or True})()
         try:
             self.assertTrue(instance._finalizeBackup(
@@ -927,6 +1009,12 @@ class BackupBridgeTests(unittest.TestCase):
         message = dialogs[0][1]
         self.assertIn('42', message)
         self.assertIn('3', message)
+        # the progress dialog must be closed before success is shown, not
+        # left open underneath it (regression guard, 2026-09-12: Eric saw
+        # a stale compression progress dialog reappear after dismissing
+        # the success dialog on a real 444MB compressed backup).
+        self.assertTrue(instance.progressBar.closed)
+        self.assertEqual(['progress_closed', 'dialog_shown'], events)
         # the FakeAddon stub's getLocalizedString() returns the numeric
         # string id rather than real English text (see install_kodi_stubs
         # in this file), so assert on the ids these getString() calls
@@ -948,6 +1036,7 @@ class BackupBridgeTests(unittest.TestCase):
         instance._rotateBackups = lambda: True
         instance.backup_plan = {'file_count': 5, 'total_kib': 10}
         instance._skin_snapshot_metadata = None
+        instance.progressBar = FakeProgress()
         dialogs = []
         original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
         backup_module.xbmcgui.Dialog = lambda: type('D', (), {
@@ -972,6 +1061,7 @@ class BackupBridgeTests(unittest.TestCase):
         instance._vfs_closed = False
         instance._active_artifact = '/fresh-backup/'
         instance._active_artifact_compressed = False
+        instance.progressBar = FakeProgress()
         closed = []
         removed = []
         instance.remote_vfs = type('Remote', (), {

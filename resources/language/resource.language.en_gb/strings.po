@@ -917,3 +917,11 @@ msgstr ""
 msgctxt "#30228"
 msgid "Compress Archives only changes the archive format - it always uses the same backup destination configured below, whether compression is on or off. You never need to set up or manage a separate location for compressed backups."
 msgstr ""
+
+msgctxt "#30229"
+msgid "Compressing backup into ZIP archive..."
+msgstr ""
+
+msgctxt "#30230"
+msgid "This may take a few moments."
+msgstr ""

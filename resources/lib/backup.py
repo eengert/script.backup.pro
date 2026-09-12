@@ -262,6 +262,18 @@ class XbmcBackup:
             if(compressing):
                 fileManager = FileManager(self.xbmc_vfs)
 
+                # from here on (finalizing the ZIP and copying it to the
+                # real destination) there is no reliable, cheap way to
+                # report incremental byte progress - the prior per-file
+                # "X remaining" wording either went stale (during verify)
+                # or was pinned at the full archive size for the entire,
+                # single blocking copy that follows. Show one clear,
+                # honest message instead of a frozen or misleading meter.
+                compressing_message = '%s\n%s' % (
+                    utils.getString(30229), utils.getString(30230))
+                self.progressBar.updateProgress(
+                    self._INDETERMINATE_PERCENT, compressing_message)
+
                 # send the zip file to the real remote vfs
                 zip_name = os.path.join(self.ZIP_TEMP_PATH, self.remote_vfs.root_path[:-1] + ".zip")
                 self.remote_vfs.cleanup()
@@ -303,7 +315,7 @@ class XbmcBackup:
                     self.transferLeft = self.transferSize
                     fileCopied = self._copyFiles(
                         fileManager.getFiles(), self.xbmc_vfs,
-                        self.remote_vfs)
+                        self.remote_vfs, progress_message=compressing_message)
                     backup_success = bool(fileCopied)
                 if backup_success:
                     try:
@@ -974,7 +986,14 @@ class XbmcBackup:
             utils.log('Unable to clear backup running state: %s' % error,
                       xbmc.LOGWARNING)
 
-    def _copyFiles(self, fileList, source, dest):
+    # Percent pinned during a copy step whose true progress cannot be
+    # tracked incrementally (see _copyFiles()'s progress_message param) -
+    # deliberately not 100, since the step is not yet done; the bar stays
+    # static instead of jumping back to a misleading, non-advancing byte
+    # countdown.
+    _INDETERMINATE_PERCENT = 99
+
+    def _copyFiles(self, fileList, source, dest, progress_message=None):
         result = True
 
         utils.log("Source: " + source.root_path)
@@ -993,10 +1012,18 @@ class XbmcBackup:
                     utils.log('Writing file: ' + aFile['file'])
 
                 if(aFile['is_dir']):
-                    self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):]) + "/"))
+                    if progress_message is not None:
+                        self.progressBar.updateProgress(
+                            self._INDETERMINATE_PERCENT, progress_message)
+                    else:
+                        self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):]) + "/"))
                     dest.mkdir(dest.root_path + aFile['file'][len(source.root_path):])
                 else:
-                    self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):])))
+                    if progress_message is not None:
+                        self.progressBar.updateProgress(
+                            self._INDETERMINATE_PERCENT, progress_message)
+                    else:
+                        self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):])))
                     self.transferLeft = self.transferLeft - aFile['size']
 
                     # copy the file
@@ -1274,6 +1301,12 @@ class XbmcBackup:
                     'an old backup could not be removed during retention')
                 return False
             self._recordLastBackup(artifact_path)
+            # the progress dialog must be fully closed before the success
+            # dialog is shown, or a modal progress dialog stays open
+            # underneath it and reappears, stale, the instant the user
+            # dismisses success (_closeVFS() closes it again later, but
+            # that is too late for what the user already saw on screen).
+            self.progressBar.close()
             xbmcgui.Dialog().ok(
                 utils.getString(30010), self._backupCompletionMessage())
             return True
@@ -1340,6 +1373,10 @@ class XbmcBackup:
         run (see _copyFiles()) are always included regardless."""
         if reason:
             self._failure_reason = reason
+        # same rationale as _finalizeBackup's success path: the progress
+        # dialog must be closed before this dialog shows, not left to be
+        # closed later by _closeVFS().
+        self.progressBar.close()
         xbmcgui.Dialog().ok(utils.getString(30010), self._backupFailureMessage())
 
     def _backupFailureMessage(self):
