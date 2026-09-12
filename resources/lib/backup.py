@@ -18,6 +18,7 @@ from resources.lib.archive import (
     MANIFEST_NAME,
     ArchiveValidationError,
     build_manifest,
+    collapse_identical_case_collisions,
     load_manifest,
     sha256_reader,
     verify_manifest_files,
@@ -1108,6 +1109,22 @@ class XbmcBackup:
 
         if skin_group is not None:
             allFiles.append(skin_group)
+
+        allFiles, alias_exclusions = collapse_identical_case_collisions(
+            allFiles,
+            lambda path: self._hashFile(path, cancellable=True))
+        if alias_exclusions:
+            self.transferSize = max(
+                1.0,
+                self.transferSize - sum(
+                    item['size_kib'] for item in alias_exclusions))
+            for exclusion in alias_exclusions:
+                utils.log(
+                    'Excluded byte-identical case-only source alias: '
+                    '%s -> %s; kept %s -> %s' % (
+                        exclusion['path'], exclusion['archive_path'],
+                        exclusion['kept_path'],
+                        exclusion['kept_archive_path']))
 
         self.backup_plan = summarize_file_groups(allFiles)
         utils.log('Backup plan: %s' % json.dumps(

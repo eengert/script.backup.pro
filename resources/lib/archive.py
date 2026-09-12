@@ -363,6 +363,100 @@ def build_manifest(groups, hash_file, metadata=None, check_cancel=None):
     return validate_manifest(document)
 
 
+def collapse_identical_case_collisions(groups, hash_file):
+    """Remove byte-identical aliases of one case-insensitive archive path.
+
+    Kodi profiles on case-sensitive filesystems can retain paths that differ
+    only by capitalization. Such paths cannot both be restored safely onto a
+    case-insensitive filesystem. Select the lexicographically smallest
+    normalized archive path (then source path as a tie-breaker), independent
+    of enumeration order, but only when every candidate has the same size and
+    SHA-256. Differing candidates remain a hard error. The final manifest
+    validator deliberately remains a separate fail-closed boundary.
+    """
+    filtered_groups = []
+    all_exclusions = []
+
+    for group in groups:
+        group_name = normalize_member_path(group['name'])
+        root = group.get('plan_root', group['source'])
+        files = list(group.get('files', []))
+        collisions = {}
+
+        for index, item in enumerate(files):
+            if item.get('is_dir'):
+                continue
+            relative = normalize_member_path(relative_path(item['file'], root))
+            archive_path = group_name + '/' + relative
+            collisions.setdefault(archive_path.casefold(), []).append({
+                'index': index,
+                'source_path': item['file'],
+                'archive_path': archive_path,
+            })
+
+        dropped = set()
+        group_exclusions = []
+        for key in sorted(collisions):
+            aliases = collisions[key]
+            if len(aliases) < 2:
+                continue
+            aliases.sort(key=lambda item: (
+                item['archive_path'], item['source_path']))
+            measured = []
+            for alias in aliases:
+                checksum, size = hash_file(alias['source_path'])
+                measured.append((alias, checksum, int(size)))
+
+            fingerprints = {(checksum, size)
+                            for _alias, checksum, size in measured}
+            if len(fingerprints) != 1:
+                details = '; '.join(
+                    '%s -> %s' % (alias['source_path'], alias['archive_path'])
+                    for alias, _checksum, _size in measured)
+                raise ArchiveValidationError(
+                    'case-colliding source files differ: ' + details)
+
+            kept = measured[0][0]
+            for alias, _checksum, size in measured[1:]:
+                dropped.add(alias['index'])
+                exclusion = {
+                    'path': alias['source_path'],
+                    'archive_path': alias['archive_path'],
+                    'kept_path': kept['source_path'],
+                    'kept_archive_path': kept['archive_path'],
+                    'size_kib': size / 1024.0,
+                    'file_count': 1,
+                    'adapter': 'casefold_alias',
+                    'reason': 'Byte-identical case-only source alias',
+                }
+                group_exclusions.append(exclusion)
+                all_exclusions.append(exclusion)
+
+        filtered = dict(group)
+        filtered['files'] = [
+            item for index, item in enumerate(files) if index not in dropped]
+        if group_exclusions and 'summary' in group:
+            summary = dict(group.get('summary') or {})
+            excluded_kib = sum(
+                item['size_kib'] for item in group_exclusions)
+            summary['included_kib'] = max(
+                0.0, float(summary.get('included_kib', 0.0)) - excluded_kib)
+            summary['included_files'] = max(
+                0, int(summary.get('included_files', 0))
+                - len(group_exclusions))
+            summary['excluded_kib'] = (
+                float(summary.get('excluded_kib', 0.0)) + excluded_kib)
+            summary['excluded_files'] = (
+                int(summary.get('excluded_files', 0))
+                + len(group_exclusions))
+            summary['exclusions'] = (
+                list(summary.get('exclusions', [])) + group_exclusions)
+            filtered['summary'] = summary
+        filtered_groups.append(filtered)
+
+    return filtered_groups, all_exclusions
+
+
 def validate_manifest(document):
     """Validate a parsed Backup Pro manifest and return a normalized copy."""
     if not isinstance(document, dict):

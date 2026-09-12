@@ -430,6 +430,67 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
 
 
 class BackupBridgeTests(unittest.TestCase):
+    def test_backup_collection_collapses_and_logs_identical_case_alias(self):
+        original_bool = backup_module.utils.getSettingBool
+        original_int = backup_module.utils.getSettingInt
+        original_log = backup_module.utils.log
+        messages = []
+        contents = {
+            '/profile/addons/Example.txt': b'same',
+            '/profile/addons/example.TXT': b'same',
+        }
+        summary = {
+            'included_kib': 8 / 1024.0,
+            'included_files': 2,
+            'excluded_kib': 0.0,
+            'excluded_files': 0,
+            'exclusions': [],
+        }
+        try:
+            backup_module.utils.getSettingBool = lambda name: (
+                name == 'backup_addons')
+            backup_module.utils.getSettingInt = lambda _name: 0
+            backup_module.utils.log = lambda message, *_args: messages.append(message)
+            instance = object.__new__(XbmcBackup)
+            instance.simple_directory_list = ['addons']
+            instance._readBackupConfig = lambda _path: {'addons': {
+                'root': '/profile/addons', 'dirs': [],
+            }}
+
+            def add_group(_name, _root, _dirs):
+                instance.transferSize += 8 / 1024.0
+                return {
+                    'name': 'addons',
+                    'source': '/profile/addons',
+                    'plan_root': '/profile/addons',
+                    'dest': '/backup/',
+                    'files': [
+                        {'file': path, 'is_dir': False,
+                         'size': len(data) / 1024.0}
+                        for path, data in contents.items()
+                    ],
+                    'summary': summary,
+                }
+
+            instance._addBackupDir = add_group
+            instance._hashFile = lambda path, **_kwargs: (
+                hashlib.sha256(contents[path]).hexdigest(), len(contents[path]))
+
+            groups = instance._collectBackupFiles()
+
+            self.assertEqual(['/profile/addons/Example.txt'],
+                             [item['file'] for item in groups[0]['files']])
+            self.assertEqual(1, instance.backup_plan['file_count'])
+            self.assertEqual(1, instance.backup_plan['excluded_files'])
+            self.assertTrue(any(
+                'Excluded byte-identical case-only source alias' in message
+                and 'example.TXT' in message and 'Example.txt' in message
+                for message in messages))
+        finally:
+            backup_module.utils.getSettingBool = original_bool
+            backup_module.utils.getSettingInt = original_int
+            backup_module.utils.log = original_log
+
     def test_skin_appearance_uses_parameterized_rpc_and_skips_unavailable(self):
         original_rpc = backup_module.xbmc.executeJSONRPC
         requests = []

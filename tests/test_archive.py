@@ -13,6 +13,7 @@ from resources.lib.archive import (
     ARCHIVE_VERSION,
     ArchiveValidationError,
     build_manifest,
+    collapse_identical_case_collisions,
     load_manifest,
     normalize_member_path,
     sha256_reader,
@@ -118,6 +119,126 @@ class ArchiveMemberTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def _collision_groups(self, paths, contents, summary=None):
+        return [{
+            'name': 'addons',
+            'source': '/profile/addons',
+            'plan_root': '/profile/addons',
+            'files': [{
+                'file': '/profile/addons/' + path,
+                'is_dir': False,
+                'size': len(contents[path]) / 1024.0,
+            } for path in paths],
+            'summary': summary or {},
+        }]
+
+    def test_collapses_identical_case_only_sources_deterministically(self):
+        contents = {
+            'Example/File.txt': b'identical',
+            'example/file.TXT': b'identical',
+        }
+        groups = self._collision_groups(
+            ['example/file.TXT', 'Example/File.txt'], contents)
+
+        filtered, exclusions = collapse_identical_case_collisions(
+            groups, lambda path: (
+                hashlib.sha256(contents[path[len('/profile/addons/'):]]).hexdigest(),
+                len(contents[path[len('/profile/addons/'):]])))
+
+        self.assertEqual(
+            ['/profile/addons/Example/File.txt'],
+            [item['file'] for item in filtered[0]['files']])
+        self.assertEqual('addons/Example/File.txt',
+                         exclusions[0]['kept_archive_path'])
+        self.assertEqual('addons/example/file.TXT',
+                         exclusions[0]['archive_path'])
+        manifest_result = build_manifest(filtered, lambda path: (
+            hashlib.sha256(
+                contents[path[len('/profile/addons/'):]]).hexdigest(),
+            len(contents[path[len('/profile/addons/'):]])))
+        self.assertEqual(
+            ['Example/File.txt'],
+            [item['path']
+             for item in manifest_result['directories'][0]['files']])
+
+    def test_collision_result_does_not_depend_on_enumeration_order(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+
+        def collapse(paths):
+            groups = self._collision_groups(paths, contents)
+            filtered, _exclusions = collapse_identical_case_collisions(
+                groups, lambda path: (
+                    hashlib.sha256(
+                        contents[path[len('/profile/addons/'):]]).hexdigest(),
+                    len(contents[path[len('/profile/addons/'):]])))
+            return [item['file'] for item in filtered[0]['files']]
+
+        self.assertEqual(collapse(['A.txt', 'a.TXT']),
+                         collapse(['a.TXT', 'A.txt']))
+
+    def test_rejects_nonidentical_case_only_sources_with_all_paths(self):
+        contents = {'A.txt': b'first', 'a.TXT': b'second'}
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+
+        with self.assertRaises(ArchiveValidationError) as raised:
+            collapse_identical_case_collisions(groups, lambda path: (
+                hashlib.sha256(
+                    contents[path[len('/profile/addons/'):]]).hexdigest(),
+                len(contents[path[len('/profile/addons/'):]])))
+
+        message = str(raised.exception)
+        self.assertIn('/profile/addons/A.txt', message)
+        self.assertIn('/profile/addons/a.TXT', message)
+        self.assertIn('addons/A.txt', message)
+        self.assertIn('addons/a.TXT', message)
+
+    def test_collapses_more_than_two_identical_aliases(self):
+        contents = {'ABC.txt': b'same', 'Abc.txt': b'same', 'abc.TXT': b'same'}
+        groups = self._collision_groups(list(contents), contents)
+
+        filtered, exclusions = collapse_identical_case_collisions(
+            groups, lambda path: (
+                hashlib.sha256(contents[path[len('/profile/addons/'):]]).hexdigest(),
+                len(contents[path[len('/profile/addons/'):]])))
+
+        self.assertEqual(['/profile/addons/ABC.txt'],
+                         [item['file'] for item in filtered[0]['files']])
+        self.assertEqual(2, len(exclusions))
+
+    def test_noncolliding_sources_are_unchanged_without_hashing(self):
+        contents = {'a.txt': b'a', 'b.txt': b'b'}
+        groups = self._collision_groups(['b.txt', 'a.txt'], contents)
+
+        filtered, exclusions = collapse_identical_case_collisions(
+            groups, lambda _path: self.fail('ordinary files must not be hashed'))
+
+        self.assertEqual(groups, filtered)
+        self.assertEqual([], exclusions)
+
+    def test_collapsed_alias_is_reflected_in_group_accounting(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+        groups = self._collision_groups(
+            ['A.txt', 'a.TXT'], contents,
+            summary={
+                'included_kib': 8 / 1024.0,
+                'included_files': 2,
+                'excluded_kib': 0.0,
+                'excluded_files': 0,
+                'exclusions': [],
+            })
+
+        filtered, _exclusions = collapse_identical_case_collisions(
+            groups, lambda path: (
+                hashlib.sha256(contents[path[len('/profile/addons/'):]]).hexdigest(),
+                len(contents[path[len('/profile/addons/'):]])))
+
+        summary = filtered[0]['summary']
+        self.assertEqual(1, summary['included_files'])
+        self.assertEqual(1, summary['excluded_files'])
+        self.assertEqual(4 / 1024.0, summary['included_kib'])
+        self.assertEqual(4 / 1024.0, summary['excluded_kib'])
+        self.assertEqual('casefold_alias', summary['exclusions'][0]['adapter'])
+
     def test_builds_portable_sorted_file_records(self):
         contents = {
             '/profile/addon_data/z.txt': b'z',
