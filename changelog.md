@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.21
+
+### Fixed
+
+- Improved handling of byte-identical case-only source aliases when Kodi VFS
+  reports inconsistent hashes, using an independent local-file comparison only
+  as a safe fallback.
+- Genuinely different or unverifiable collisions still fail closed.
+
 ## Version 0.9.20
 
 ### Fixed
