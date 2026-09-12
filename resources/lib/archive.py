@@ -381,7 +381,18 @@ def _hash_local_file(path):
         return sha256_reader(lambda size: source.read(size))
 
 
-def _confirm_identical_via_local_read(measured, local_hash_file):
+def _diagnostic(log, message):
+    """Emit best-effort collision diagnostics without affecting decisions."""
+    if log is None:
+        return
+    try:
+        log(message)
+    except Exception:
+        pass
+
+
+def _confirm_identical_via_local_read(
+        measured, local_hash_file, diagnostic_log=None):
     """Re-check same-size, VFS-disagreeing aliases via independent I/O.
 
     Returns True only if every alias is readable as a native local file and
@@ -390,20 +401,50 @@ def _confirm_identical_via_local_read(measured, local_hash_file):
     keeps failing closed.
     """
     if local_hash_file is None:
+        _diagnostic(
+            diagnostic_log,
+            'native fallback unavailable: no local hash function')
         return False
     local_fingerprints = set()
     for alias, _checksum, _size in measured:
+        source_path = alias['source_path']
+        local_path = '://' not in source_path
+        is_file = os.path.isfile(source_path) if local_path else False
+        _diagnostic(
+            diagnostic_log,
+            'native candidate: archive_path=%s source_path=%s '
+            'eligible=%s os.path.isfile=%s' % (
+                alias['archive_path'], source_path,
+                str(local_path and is_file).lower(),
+                str(is_file).lower()))
         try:
             local_checksum, local_size = local_hash_file(
-                alias['source_path'])
-        except Exception:
+                source_path)
+        except Exception as error:
+            _diagnostic(
+                diagnostic_log,
+                'native hash failed: archive_path=%s source_path=%s '
+                'exception=%s: %s' % (
+                    alias['archive_path'], source_path,
+                    type(error).__name__, str(error)))
             return False
-        local_fingerprints.add((local_checksum, int(local_size)))
-    return len(local_fingerprints) == 1
+        local_size = int(local_size)
+        _diagnostic(
+            diagnostic_log,
+            'native hash: archive_path=%s source_path=%s bytes=%d sha256=%s' % (
+                alias['archive_path'], source_path,
+                local_size, local_checksum))
+        local_fingerprints.add((local_checksum, local_size))
+    confirmed = len(local_fingerprints) == 1
+    _diagnostic(
+        diagnostic_log,
+        'native fallback result: identical=%s' % str(confirmed).lower())
+    return confirmed
 
 
 def collapse_identical_case_collisions(
-        groups, hash_file, local_hash_file=_hash_local_file):
+        groups, hash_file, local_hash_file=_hash_local_file,
+        diagnostic_log=None):
     """Remove byte-identical aliases of one case-insensitive archive path.
 
     Kodi profiles on case-sensitive filesystems can retain paths that differ
@@ -455,16 +496,32 @@ def collapse_identical_case_collisions(
             measured = []
             for alias in aliases:
                 checksum, size = hash_file(alias['source_path'])
-                measured.append((alias, checksum, int(size)))
+                size = int(size)
+                measured.append((alias, checksum, size))
+                _diagnostic(
+                    diagnostic_log,
+                    'primary VFS hash: archive_path=%s source_path=%s '
+                    'bytes=%d sha256=%s' % (
+                        alias['archive_path'], alias['source_path'],
+                        size, checksum))
 
             fingerprints = {(checksum, size)
                             for _alias, checksum, size in measured}
             if len(fingerprints) != 1:
                 sizes = {size for _alias, _checksum, size in measured}
-                confirmed_identical = (
-                    len(sizes) == 1
-                    and _confirm_identical_via_local_read(
-                        measured, local_hash_file))
+                if len(sizes) != 1:
+                    _diagnostic(
+                        diagnostic_log,
+                        'native fallback not entered: primary VFS byte '
+                        'counts differ; sizes=%s' % sorted(sizes))
+                    confirmed_identical = False
+                else:
+                    _diagnostic(
+                        diagnostic_log,
+                        'native fallback entered: primary VFS hashes differ '
+                        'and byte counts match; bytes=%d' % next(iter(sizes)))
+                    confirmed_identical = _confirm_identical_via_local_read(
+                        measured, local_hash_file, diagnostic_log)
                 if not confirmed_identical:
                     details = '; '.join(
                         '%s -> %s' % (
@@ -472,6 +529,11 @@ def collapse_identical_case_collisions(
                         for alias, _checksum, _size in measured)
                     raise ArchiveValidationError(
                         'case-colliding source files differ: ' + details)
+            else:
+                _diagnostic(
+                    diagnostic_log,
+                    'native fallback not entered: primary VFS fingerprints '
+                    'agree')
 
             kept = measured[0][0]
             for alias, _checksum, size in measured[1:]:

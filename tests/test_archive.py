@@ -7,6 +7,7 @@ import stat
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 from resources.lib.archive import (
     ARCHIVE_ID,
@@ -321,6 +322,86 @@ class ManifestTests(unittest.TestCase):
                 groups,
                 self._mismatched_vfs_hash_file(contents),
                 local_hash_file=broken)
+
+    def test_vfs_size_mismatch_logs_fallback_not_entered_and_fails(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+        messages = []
+
+        def mismatched_size(path):
+            key = path[len('/profile/addons/'):]
+            return 'vfs-' + key, 4 if key == 'A.txt' else 5
+
+        with self.assertRaises(ArchiveValidationError):
+            collapse_identical_case_collisions(
+                groups, mismatched_size,
+                local_hash_file=lambda _path: self.fail(
+                    'size mismatch must not enter fallback'),
+                diagnostic_log=messages.append)
+
+        self.assertTrue(any(
+            'native fallback not entered' in message and 'sizes=[4, 5]' in message
+            for message in messages))
+        self.assertEqual(2, sum(
+            'primary VFS hash:' in message for message in messages))
+
+    def test_fallback_entry_and_success_details_are_logged(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+        messages = []
+        digest = hashlib.sha256(b'same').hexdigest()
+
+        with mock.patch('resources.lib.archive.os.path.isfile', return_value=True):
+            filtered, exclusions = collapse_identical_case_collisions(
+                groups, self._mismatched_vfs_hash_file(contents),
+                local_hash_file=lambda _path: (digest, 4),
+                diagnostic_log=messages.append)
+
+        self.assertEqual(1, len(filtered[0]['files']))
+        self.assertEqual(1, len(exclusions))
+        self.assertTrue(any('native fallback entered:' in m for m in messages))
+        self.assertEqual(2, sum(
+            'eligible=true os.path.isfile=true' in m for m in messages))
+        native = [m for m in messages if m.startswith('native hash:')]
+        self.assertEqual(2, len(native))
+        self.assertTrue(all('bytes=4 sha256=' + digest in m for m in native))
+        self.assertIn('native fallback result: identical=true', messages)
+
+    def test_non_file_eligibility_is_logged_and_still_fails_closed(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+        messages = []
+
+        with mock.patch('resources.lib.archive.os.path.isfile', return_value=False):
+            with self.assertRaises(ArchiveValidationError):
+                collapse_identical_case_collisions(
+                    groups, self._mismatched_vfs_hash_file(contents),
+                    local_hash_file=_hash_local_file,
+                    diagnostic_log=messages.append)
+
+        self.assertTrue(any(
+            'eligible=false os.path.isfile=false' in message
+            for message in messages))
+        self.assertTrue(any(
+            'exception=ArchiveValidationError: path is not a native local file:'
+            in message for message in messages))
+
+    def test_native_hash_exception_is_logged_and_still_fails_closed(self):
+        contents = {'A.txt': b'same', 'a.TXT': b'same'}
+        groups = self._collision_groups(['A.txt', 'a.TXT'], contents)
+        messages = []
+
+        def broken(_path):
+            raise OSError('native read denied')
+
+        with self.assertRaises(ArchiveValidationError):
+            collapse_identical_case_collisions(
+                groups, self._mismatched_vfs_hash_file(contents),
+                local_hash_file=broken, diagnostic_log=messages.append)
+
+        self.assertTrue(any(
+            'exception=OSError: native read denied' in message
+            for message in messages))
 
     def test_fallback_not_consulted_when_vfs_hashes_already_agree(self):
         contents = {'A.txt': b'same', 'a.TXT': b'same'}

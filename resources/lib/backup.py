@@ -1190,7 +1190,10 @@ class XbmcBackup:
 
         allFiles, alias_exclusions = collapse_identical_case_collisions(
             allFiles,
-            lambda path: self._hashFile(path, cancellable=True))
+            lambda path: self._hashFile(path, cancellable=True),
+            diagnostic_log=lambda message: utils.log(
+                'Case-collision diagnostic: ' + message,
+                xbmc.LOGWARNING))
         if alias_exclusions:
             self.transferSize = max(
                 1.0,
