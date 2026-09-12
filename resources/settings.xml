@@ -12,22 +12,31 @@
         <!-- Internal-only local staging scratch path used while building a
              compressed archive before it is copied to the one configured
              backup destination (see "Backup Path" below) - never a second
-             destination, so this is never shown in the UI. Retained (not
-             removed) so any already-persisted value keeps working exactly
-             as before for existing users; the default ("special://temp")
-             is correct for virtually everyone. -->
-        <setting id="zip_temp_path" type="string" label="30152" help="30153">
-	        <level>3</level>
-	          <default>special://temp</default>
-	          <constraints>
-		          <allowempty>true</allowempty>
-	          </constraints>
-            <dependencies>
-              <dependency type="visible">false</dependency>
-            </dependencies>
-	          <control type="edit" format="string">
-		          <heading>30152</heading>
-	          </control>
+             destination, so this must never be shown in the UI. Retained
+             (not removed) so any already-persisted value keeps working
+             exactly as before for existing users; the default
+             ("special://temp") is correct for virtually everyone.
+
+             0.9.12 tried to hide this via <dependencies><dependency
+             type="visible">false</dependency></dependencies> (no `setting`
+             attribute) - live-confirmed by Eric on 0.9.12 to NOT work: a
+             bare literal isn't a form of visibility condition Kodi's addon
+             settings dependency evaluator recognizes (those conditions are
+             for referencing *another setting's* current value, not a
+             constant), so it was silently ignored and the field stayed
+             visible. Per Kodi's own settings.xml documentation, a
+             <setting> with no <control> element is never rendered in the
+             GUI at all - independent of <level> (whose effect on
+             per-addon settings dialogs is unreliable across Kodi
+             versions/skins anyway) and independent of any dependency
+             expression - while remaining fully readable/writable through
+             the normal addon settings API. That's the only mechanism used
+             here now. -->
+        <setting id="zip_temp_path" type="string">
+          <default>special://temp</default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
         </setting>
         <!-- backup rotation -->
         <setting id="backup_rotation" type="integer" label="30026" help="">

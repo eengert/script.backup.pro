@@ -25,23 +25,25 @@ class SettingsXmlTests(unittest.TestCase):
         self.root = ElementTree.parse(SETTINGS_XML).getroot()
 
     def test_zip_temp_path_is_never_visible(self):
+        # regression guard, 2026-09-12: a 0.9.12 attempt to hide this via
+        # <dependencies><dependency type="visible">false</dependency></...>
+        # (no `setting` attribute) was live-confirmed by Eric to NOT work
+        # in real Kodi - that dependency form is for referencing another
+        # setting's current value, not a literal constant, so it was
+        # silently ignored and the field stayed visible. Per Kodi's own
+        # settings.xml documentation, a <setting> with no <control>
+        # element is never rendered in the GUI at all, independent of
+        # <level> or any dependency expression - that is the only
+        # mechanism relied on now, so assert its actual precondition:
+        # no <control> child, at all.
         setting = _find_setting(self.root, 'zip_temp_path')
         self.assertIsNotNone(setting, 'zip_temp_path setting was removed '
                               '(retained on purpose so an existing '
                               "persisted value keeps working)")
-        dependencies = setting.find('dependencies')
-        self.assertIsNotNone(dependencies)
-        visible_dependencies = [
-            dependency for dependency in dependencies.findall('dependency')
-            if dependency.get('type') == 'visible'
-        ]
-        self.assertTrue(visible_dependencies)
-        for dependency in visible_dependencies:
-            # unconditional - not gated on compress_backups (or anything
-            # else), so it can never become visible under any settings
-            # combination.
-            self.assertIsNone(dependency.get('setting'))
-            self.assertEqual('false', (dependency.text or '').strip())
+        self.assertIsNone(
+            setting.find('control'),
+            'zip_temp_path has a <control> element, so Kodi will render '
+            'it in the settings UI regardless of <level> or dependencies')
 
     def test_zip_temp_path_default_is_unchanged(self):
         # confirms this is still purely internal plumbing with a sane
