@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.13
+
+### Fixed
+
+- The "Set Zip File Location" setting could still appear under Compress
+  Archives after 0.9.12's attempted fix. The internal zip staging path is
+  now genuinely never exposed as a user setting, on real Kodi, not just
+  according to the settings file - compressed backups continue to work
+  exactly as before.
+
 ## Version 0.9.12
 
 ### Fixed
