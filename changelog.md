@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.14
+
+### Fixed
+
+- The compressed-backup progress dialog showed a frozen "X remaining"
+  byte countdown during the final copy of the finished archive to the
+  backup destination, since that step copies one large file with no
+  incremental progress available. It now shows a clear, honest message
+  ("Compressing backup into ZIP archive...") instead of a misleading,
+  non-advancing figure.
+- The progress dialog could stay open underneath the final success or
+  failure dialog and reappear, stale, right after it was dismissed. The
+  progress dialog is now closed before either result dialog is shown.
+
 ## Version 0.9.13
 
 ### Fixed
