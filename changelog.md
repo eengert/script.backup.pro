@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.22
+
+### Added
+
+- Added diagnostic logging for tvOS case-collision verification, including
+  Kodi VFS and native fallback details. This release does not claim to fix the
+  underlying compatibility issue; collision handling remains fail-closed.
+
 ## Version 0.9.21
 
 ### Fixed
