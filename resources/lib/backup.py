@@ -89,6 +89,7 @@ class XbmcBackup:
 
     restoreFile = None
     remote_base_path = None
+    _remote_raw_path = None
 
     # for the progress bar
     progressBar = None
@@ -121,11 +122,20 @@ class XbmcBackup:
         utils.log(utils.getString(30046))
 
     def configureRemote(self):
+        # the raw, unnormalized setting value backing the current
+        # remote_vfs, if the destination is path-based - Vfs.clean_path()
+        # always appends a trailing slash (turning "" into "/"), so
+        # remote_vfs.root_path can never be used to detect an empty
+        # setting; remoteConfigured() checks this instead.
+        self._remote_raw_path = None
+
         if(utils.getSetting('remote_selection') == '1'):
-            self.remote_vfs = XBMCFileSystem(utils.getSetting('remote_path_2'))
+            self._remote_raw_path = utils.getSetting('remote_path_2')
+            self.remote_vfs = XBMCFileSystem(self._remote_raw_path)
             utils.setSetting("remote_path", "")
         elif(utils.getSetting('remote_selection') == '0'):
-            self.remote_vfs = XBMCFileSystem(utils.getSetting("remote_path"))
+            self._remote_raw_path = utils.getSetting("remote_path")
+            self.remote_vfs = XBMCFileSystem(self._remote_raw_path)
         elif(utils.getSetting('remote_selection') == '2'):
             self.remote_vfs = DropboxFileSystem("/")
 
@@ -134,7 +144,9 @@ class XbmcBackup:
     def remoteConfigured(self):
         result = True
 
-        if(self.remote_base_path == "" or not xbmcvfs.exists(self.ZIP_TEMP_PATH)):
+        if(self._remote_raw_path is not None and not self._remote_raw_path.strip()):
+            result = False
+        elif(not xbmcvfs.exists(self.ZIP_TEMP_PATH)):
             result = False
 
         return result

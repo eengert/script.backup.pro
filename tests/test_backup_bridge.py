@@ -1376,6 +1376,108 @@ class SkinSwitchConfirmationTests(unittest.TestCase):
         self.assertFalse(any('Choose Yes' in m for m in messages))
 
 
+class RemoteConfiguredTests(unittest.TestCase):
+    """remoteConfigured() gates both manual Backup and Restore in
+    default.py; it must detect an empty destination setting even though
+    Vfs.clean_path() normalizes "" to "/" on the constructed remote_vfs."""
+
+    def setUp(self):
+        self._original_get = backup_module.utils.getSetting
+        self._original_set = backup_module.utils.setSetting
+        self._original_exists = getattr(backup_module.xbmcvfs, 'exists', None)
+        self._zip_temp_exists = True
+        backup_module.utils.getSetting = lambda name: self._settings.get(name, '')
+        backup_module.utils.setSetting = lambda *_a, **_k: None
+        backup_module.xbmcvfs.exists = lambda _path: self._zip_temp_exists
+
+    def tearDown(self):
+        backup_module.utils.getSetting = self._original_get
+        backup_module.utils.setSetting = self._original_set
+        if self._original_exists is None:
+            delattr(backup_module.xbmcvfs, 'exists')
+        else:
+            backup_module.xbmcvfs.exists = self._original_exists
+
+    def _configure(self, settings, zip_temp_exists=True):
+        self._settings = settings
+        self._zip_temp_exists = zip_temp_exists
+        instance = object.__new__(XbmcBackup)
+        instance.ZIP_TEMP_PATH = '/zip_temp'
+        instance.configureRemote()
+        return instance
+
+    def test_empty_primary_destination_is_not_configured(self):
+        instance = self._configure(
+            {'remote_selection': '0', 'remote_path': ''})
+        self.assertEqual('/', instance.remote_base_path)
+        self.assertFalse(instance.remoteConfigured())
+
+    def test_empty_secondary_destination_is_not_configured(self):
+        instance = self._configure(
+            {'remote_selection': '1', 'remote_path_2': ''})
+        self.assertEqual('/', instance.remote_base_path)
+        self.assertFalse(instance.remoteConfigured())
+
+    def test_normalized_root_only_path_never_looks_configured(self):
+        # a blank setting always normalizes to root_path == "/" - assert
+        # remoteConfigured() does not mistake that for a real destination.
+        instance = self._configure(
+            {'remote_selection': '0', 'remote_path': '   '})
+        self.assertFalse(instance.remoteConfigured())
+
+    def test_valid_smb_path_remains_configured(self):
+        instance = self._configure({
+            'remote_selection': '0',
+            'remote_path': 'smb://user:pass@host/share/backups',
+        })
+        self.assertTrue(instance.remoteConfigured())
+
+    def test_valid_local_path_remains_configured(self):
+        instance = self._configure({
+            'remote_selection': '0',
+            'remote_path': '/local/backups',
+        })
+        self.assertTrue(instance.remoteConfigured())
+
+    def test_missing_zip_temp_path_still_blocks_when_path_is_valid(self):
+        instance = self._configure(
+            {'remote_selection': '0', 'remote_path': '/local/backups'},
+            zip_temp_exists=False)
+        self.assertFalse(instance.remoteConfigured())
+
+    def test_backup_declines_mkdir_when_destination_not_configured(self):
+        instance = self._configure(
+            {'remote_selection': '0', 'remote_path': ''})
+        self.assertFalse(instance.remoteConfigured())
+
+        mkdir_calls = []
+        instance.remote_vfs.mkdir = (
+            lambda directory: mkdir_calls.append(directory) or True)
+
+        # mirrors default.py's BACKUP dispatch gate: backup() only runs
+        # when remoteConfigured() is true.
+        if instance.remoteConfigured():
+            instance.backup()
+
+        self.assertEqual([], mkdir_calls)
+
+    def test_restore_declines_remote_listing_when_destination_not_configured(self):
+        instance = self._configure(
+            {'remote_selection': '0', 'remote_path': ''})
+        self.assertFalse(instance.remoteConfigured())
+
+        listdir_calls = []
+        instance.remote_vfs.listdir = (
+            lambda directory: listdir_calls.append(directory) or ([], []))
+
+        # mirrors default.py's RESTORE dispatch gate: listBackups()/
+        # restore() only run when remoteConfigured() is true.
+        if instance.remoteConfigured():
+            instance.listBackups()
+
+        self.assertEqual([], listdir_calls)
+
+
 class StatusReportTests(unittest.TestCase):
     """Exercises XbmcBackup.buildStatusReport()'s Kodi-side wiring: it
     must stay read-only, local-only (no remote listing, no network probe)
