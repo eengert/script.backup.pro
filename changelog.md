@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.23
+
+### Added
+
+- Guarded tvOS settings against use after add-on changes: Backup Pro now
+  detects an unsafe session (stale/default settings possible after add-on
+  install/uninstall/update on tvOS) and blocks settings-dependent actions
+  instead of acting on stale values, prompting a one-time restart when
+  needed.
+
 ## Version 0.9.22
 
 ### Added
