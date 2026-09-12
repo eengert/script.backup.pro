@@ -925,3 +925,19 @@ msgstr ""
 msgctxt "#30230"
 msgid "This may take a few moments."
 msgstr ""
+
+msgctxt "#30231"
+msgid "Preparing backup for restore..."
+msgstr ""
+
+msgctxt "#30232"
+msgid "Copying compressed archive..."
+msgstr ""
+
+msgctxt "#30233"
+msgid "Reading and verifying compressed archive..."
+msgstr ""
+
+msgctxt "#30234"
+msgid "Arctic Fuse 3 Configuration"
+msgstr ""

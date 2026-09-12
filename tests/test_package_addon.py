@@ -108,8 +108,12 @@ class PackageAddonTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(
                 os.path.join(addon_dir, 'resources', 'images',
                              'icon.png')))
+            self.assertTrue(os.path.isfile(
+                os.path.join(addon_dir, 'resources', 'lib', 'restore_ui.py')))
             with zipfile.ZipFile(zip_path) as archive:
                 names = archive.namelist()
+            self.assertIn('script.backup.pro/resources/lib/restore_ui.py',
+                          names)
             self.assertFalse(any('__pycache__' in n for n in names))
             self.assertFalse(any(n.endswith(('.pyc', '.pyo'))
                                   for n in names))

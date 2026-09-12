@@ -5,6 +5,7 @@ from .archive import (
     validate_archive_members,
     verify_archive_payload,
 )
+from .restore_ui import restore_preparation_message
 
 
 class ZipExtractor:
@@ -15,7 +16,8 @@ class ZipExtractor:
         result = True  # result is true unless we fail
 
         # update the progress bar
-        progressBar.updateProgress(0, utils.getString(30100))
+        progressBar.updateProgress(0, restore_preparation_message(
+            utils.getString, 'verify_archive'))
 
         # Validate the complete central directory before materializing anything.
         files = zipFile.listFiles()
@@ -33,6 +35,9 @@ class ZipExtractor:
 
         fileCount = float(len(files))
         currentFile = 0
+
+        progressBar.updateProgress(0, restore_preparation_message(
+            utils.getString, 'extract_archive'))
 
         try:
             for aFile in files:

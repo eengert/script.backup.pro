@@ -31,6 +31,11 @@ from resources.lib.planning import (
     summarize_file_groups,
     tmdb_helper_cache_exclusions,
 )
+from resources.lib.restore_ui import (
+    restore_preparation_message,
+    restore_set_labels,
+    selected_restore_set_ids,
+)
 from resources.lib.status import describe_status
 from resources.lib.skin_adapter import (
     AF3_ID,
@@ -376,13 +381,15 @@ class XbmcBackup:
 
             # catch for if the restore point is actually a zip file
             if(self.restore_point.split('.')[-1] == 'zip'):
-                self.progressBar.updateProgress(2, utils.getString(30088))
                 utils.log("copying zip file: " + self.restore_point)
 
                 # set root to data dir home
                 self.xbmc_vfs.set_root(self.ZIP_TEMP_PATH)
                 restore_path = os.path.join(self.ZIP_TEMP_PATH, self.restore_point)
                 if(not self.xbmc_vfs.exists(restore_path)):
+                    copy_message = restore_preparation_message(
+                        utils.getString, 'copy_archive')
+                    self.progressBar.updateProgress(2, copy_message)
                     # copy just this file from the remote vfs
                     self.transferSize = self.remote_vfs.fileSize(self.remote_base_path + self.restore_point)
                     zipFile = []
@@ -390,7 +397,9 @@ class XbmcBackup:
 
                     # set transfer size
                     self.transferLeft = self.transferSize
-                    self._copyFiles(zipFile, self.remote_vfs, self.xbmc_vfs)
+                    self._copyFiles(
+                        zipFile, self.remote_vfs, self.xbmc_vfs,
+                        progress_prefix=copy_message)
                 else:
                     utils.log("zip file exists already")
 
@@ -429,15 +438,19 @@ class XbmcBackup:
 
             # use a multiselect dialog to select sets to restore
             restoreSets = [n['name'] for n in valFile['directories']]
+            restoreLabels = restore_set_labels(restoreSets, utils.getString)
 
             # if passed in list, skip selection
             if(selectedSets is None):
-                selectedSets = xbmcgui.Dialog().multiselect(utils.getString(30131), restoreSets)
+                selectedSets = xbmcgui.Dialog().multiselect(
+                    utils.getString(30131), restoreLabels)
             else:
                 selectedSets = [restoreSets.index(n) for n in selectedSets if n in restoreSets]  # if set name not found just skip it
 
             restoreSettings = False
             if(selectedSets is not None):
+                selectedRestoreSets = selected_restore_set_ids(
+                    restoreSets, selectedSets)
                 skin_indexes = [
                     index for index in selectedSets
                     if restoreSets[index].casefold() == 'skin_config'
@@ -454,7 +467,7 @@ class XbmcBackup:
                     return result
 
                 selected_names = {
-                    restoreSets[index].casefold() for index in selectedSets
+                    name.casefold() for name in selectedRestoreSets
                 }
 
                 # advancedsettings.xml requires a restart, but only when the
@@ -973,7 +986,10 @@ class XbmcBackup:
 
         # setup the progress bar
         self.progressBar = BackupProgressBar(progressOverride)
-        self.progressBar.create(progressBarTitle, utils.getString(30049) + "......")
+        initial_message = utils.getString(30049) + "......"
+        if mode == self.Restore:
+            initial_message = restore_preparation_message(utils.getString)
+        self.progressBar.create(progressBarTitle, initial_message)
         self._vfs_closed = False
 
         # if we made it this far we're good
@@ -1006,7 +1022,8 @@ class XbmcBackup:
     # countdown.
     _INDETERMINATE_PERCENT = 99
 
-    def _copyFiles(self, fileList, source, dest, progress_message=None):
+    def _copyFiles(self, fileList, source, dest, progress_message=None,
+                   progress_prefix=None):
         result = True
 
         utils.log("Source: " + source.root_path)
@@ -1029,14 +1046,25 @@ class XbmcBackup:
                         self.progressBar.updateProgress(
                             self._INDETERMINATE_PERCENT, progress_message)
                     else:
-                        self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):]) + "/"))
+                        message = '%s remaining\nwriting %s' % (
+                            utils.diskString(self.transferLeft),
+                            os.path.basename(
+                                aFile['file'][len(source.root_path):]) + "/")
+                        if progress_prefix:
+                            message = progress_prefix + '\n' + message
+                        self._updateProgress(message)
                     dest.mkdir(dest.root_path + aFile['file'][len(source.root_path):])
                 else:
                     if progress_message is not None:
                         self.progressBar.updateProgress(
                             self._INDETERMINATE_PERCENT, progress_message)
                     else:
-                        self._updateProgress('%s remaining\nwriting %s' % (utils.diskString(self.transferLeft), os.path.basename(aFile['file'][len(source.root_path):])))
+                        message = '%s remaining\nwriting %s' % (
+                            utils.diskString(self.transferLeft),
+                            os.path.basename(aFile['file'][len(source.root_path):]))
+                        if progress_prefix:
+                            message = progress_prefix + '\n' + message
+                        self._updateProgress(message)
                     self.transferLeft = self.transferLeft - aFile['size']
 
                     # copy the file

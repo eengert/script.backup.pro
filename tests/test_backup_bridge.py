@@ -888,6 +888,43 @@ class BackupBridgeTests(unittest.TestCase):
         self.assertEqual(instance._INDETERMINATE_PERCENT, percent)
         self.assertGreater(percent, 0)
 
+    def test_copy_files_progress_prefix_keeps_phase_and_size_remaining(self):
+        instance = object.__new__(XbmcBackup)
+        updates = []
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, _percent, _message=None: None,
+        })()
+        instance._updateProgress = updates.append
+        instance.transferSize = 376 * 1024 * 1024
+        instance.transferLeft = instance.transferSize
+
+        class Dest:
+            root_path = '/staging/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+            def put(self, _source_file, _dest_file):
+                return True
+
+        class Source:
+            root_path = '/remote/'
+
+        result = instance._copyFiles([{
+            'file': '/remote/backup.zip',
+            'size': instance.transferSize,
+            'is_dir': False,
+        }], Source(), Dest(), progress_prefix='30231\n30232')
+
+        self.assertTrue(result)
+        self.assertEqual(1, len(updates))
+        self.assertTrue(updates[0].startswith('30231\n30232\n'))
+        self.assertIn('remaining\nwriting backup.zip', updates[0])
+
     def test_backup_failure_message_reports_reason_and_failed_files(self):
         instance = object.__new__(XbmcBackup)
         instance._failure_reason = 'backup verification failed: checksum mismatch'

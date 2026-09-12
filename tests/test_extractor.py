@@ -74,8 +74,14 @@ class ExtractorTests(unittest.TestCase):
 
     def test_extracts_valid_members_after_preflight(self):
         archive = valid_archive()
-        self.assertTrue(ZipExtractor().extract(archive, '/staging', Progress()))
+        progress = Progress()
+        self.assertTrue(ZipExtractor().extract(archive, '/staging', progress))
         self.assertEqual(3, len(archive.extracted))
+        self.assertEqual((0, '30231\n30233'), progress.updates[0])
+        self.assertIn((0, '30231\n30100'), progress.updates)
+        self.assertLess(
+            progress.updates.index((0, '30231\n30233')),
+            progress.updates.index((0, '30231\n30100')))
 
     def test_rejects_archive_without_backup_pro_manifest(self):
         archive = FakeZip([Entry('202609081200/file.txt')])
