@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.18
+
+### Changed
+
+- Compressed restores now clearly distinguish preparation, copying,
+  archive verification, and extraction before actual restore writes begin.
+  Non-compressed restores use preparation wording without claiming
+  archive-specific work.
+- The restore-set chooser now presents human-readable labels using Backup
+  Pro's established Settings terminology. Internal restore-set IDs and
+  compatibility with existing Backup Pro archives are unchanged.
+
 ## Version 0.9.17
 
 ### Fixed
