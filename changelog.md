@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.20
+
+### Fixed
+
+- Compressed restores now stage archives through Kodi's VFS in bounded
+  chunks, allowing the progress meter and size-remaining text to advance
+  from bytes actually copied. Sources without safe incremental progress use
+  explicit unknown-progress messaging instead of a misleading meter.
+- The refreshed Backup Pro artwork now uses a new icon path, ensuring Kodi
+  treats it as a new texture cache key after an add-on upgrade.
+
 ## Version 0.9.19
 
 ### Changed

@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
@@ -107,13 +108,25 @@ class PackageAddonTests(unittest.TestCase):
                 os.path.join(addon_dir, 'addon.xml')))
             self.assertTrue(os.path.isfile(
                 os.path.join(addon_dir, 'resources', 'images',
-                             'icon.png')))
+                             'icon-v2.png')))
             self.assertTrue(os.path.isfile(
                 os.path.join(addon_dir, 'resources', 'lib', 'restore_ui.py')))
             with zipfile.ZipFile(zip_path) as archive:
                 names = archive.namelist()
+                addon = ET.fromstring(
+                    archive.read('script.backup.pro/addon.xml').lstrip(
+                        b'\xef\xbb\xbf'))
             self.assertIn('script.backup.pro/resources/lib/restore_ui.py',
                           names)
+            self.assertIn(
+                'script.backup.pro/resources/images/icon-v2.png', names)
+            self.assertNotIn(
+                'script.backup.pro/resources/images/icon.png', names)
+            self.assertEqual(
+                'resources/images/icon-v2.png',
+                addon.find(
+                    './extension[@point="xbmc.addon.metadata"]/'
+                    'assets/icon').text)
             self.assertFalse(any('__pycache__' in n for n in names))
             self.assertFalse(any(n.endswith(('.pyc', '.pyo'))
                                   for n in names))

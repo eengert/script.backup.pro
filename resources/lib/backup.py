@@ -397,9 +397,23 @@ class XbmcBackup:
 
                     # set transfer size
                     self.transferLeft = self.transferSize
-                    self._copyFiles(
-                        zipFile, self.remote_vfs, self.xbmc_vfs,
-                        progress_prefix=copy_message)
+                    if isinstance(self.remote_vfs, XBMCFileSystem):
+                        copied = self._copyFiles(
+                            zipFile, self.remote_vfs, self.xbmc_vfs,
+                            progress_prefix=copy_message,
+                            incremental_copy=self.xbmc_vfs.put_with_progress)
+                    else:
+                        unknown_progress_message = '%s\n%s: %s\n%s' % (
+                            copy_message,
+                            utils.getString(30236),
+                            utils.diskString(self.transferSize),
+                            utils.getString(30235))
+                        copied = self._copyFiles(
+                            zipFile, self.remote_vfs, self.xbmc_vfs,
+                            progress_message=unknown_progress_message,
+                            progress_percent=0)
+                    if not copied:
+                        return False
                 else:
                     utils.log("zip file exists already")
 
@@ -1023,7 +1037,8 @@ class XbmcBackup:
     _INDETERMINATE_PERCENT = 99
 
     def _copyFiles(self, fileList, source, dest, progress_message=None,
-                   progress_prefix=None):
+                   progress_prefix=None, progress_percent=None,
+                   incremental_copy=None):
         result = True
 
         utils.log("Source: " + source.root_path)
@@ -1044,7 +1059,8 @@ class XbmcBackup:
                 if(aFile['is_dir']):
                     if progress_message is not None:
                         self.progressBar.updateProgress(
-                            self._INDETERMINATE_PERCENT, progress_message)
+                            self._INDETERMINATE_PERCENT if progress_percent is None
+                            else progress_percent, progress_message)
                     else:
                         message = '%s remaining\nwriting %s' % (
                             utils.diskString(self.transferLeft),
@@ -1057,7 +1073,8 @@ class XbmcBackup:
                 else:
                     if progress_message is not None:
                         self.progressBar.updateProgress(
-                            self._INDETERMINATE_PERCENT, progress_message)
+                            self._INDETERMINATE_PERCENT if progress_percent is None
+                            else progress_percent, progress_message)
                     else:
                         message = '%s remaining\nwriting %s' % (
                             utils.diskString(self.transferLeft),
@@ -1065,10 +1082,31 @@ class XbmcBackup:
                         if progress_prefix:
                             message = progress_prefix + '\n' + message
                         self._updateProgress(message)
-                    self.transferLeft = self.transferLeft - aFile['size']
+                    dest_file = (dest.root_path +
+                                 aFile['file'][len(source.root_path):])
+                    if incremental_copy is not None:
+                        initial_left = self.transferLeft
 
-                    # copy the file
-                    wroteFile = self._copyFile(source, dest, aFile['file'], dest.root_path + aFile['file'][len(source.root_path):])
+                        def report_bytes(copied_bytes):
+                            self.transferLeft = max(
+                                0, initial_left - (copied_bytes / 1024.0))
+                            message = '%s remaining\nwriting %s' % (
+                                utils.diskString(self.transferLeft),
+                                os.path.basename(
+                                    aFile['file'][len(source.root_path):]))
+                            if progress_prefix:
+                                message = progress_prefix + '\n' + message
+                            self._updateProgress(message)
+                            return not self.progressBar.checkCancel()
+
+                        wroteFile = incremental_copy(
+                            aFile['file'], dest_file, report_bytes)
+                        self.transferLeft = max(
+                            0, initial_left - aFile['size'])
+                    else:
+                        self.transferLeft = self.transferLeft - aFile['size']
+                        wroteFile = self._copyFile(
+                            source, dest, aFile['file'], dest_file)
 
                     # record every failure, not just the first, so a
                     # failed backup can report exactly what went wrong

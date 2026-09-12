@@ -925,6 +925,79 @@ class BackupBridgeTests(unittest.TestCase):
         self.assertTrue(updates[0].startswith('30231\n30232\n'))
         self.assertIn('remaining\nwriting backup.zip', updates[0])
 
+    def test_copy_files_streamed_progress_uses_actual_bytes_copied(self):
+        instance = object.__new__(XbmcBackup)
+        updates = []
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, percent, message=None:
+                updates.append((percent, message)),
+        })()
+        instance.transferSize = 8 * 1024
+        instance.transferLeft = instance.transferSize
+
+        class Dest:
+            root_path = '/staging/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+        class Source:
+            root_path = '/remote/'
+
+        def streamed_copy(_source, _dest, report_bytes):
+            self.assertTrue(report_bytes(4 * 1024 * 1024))
+            self.assertTrue(report_bytes(8 * 1024 * 1024))
+            return True
+
+        result = instance._copyFiles([{
+            'file': '/remote/backup.zip',
+            'size': instance.transferSize,
+            'is_dir': False,
+        }], Source(), Dest(), progress_prefix='30231\n30232',
+            incremental_copy=streamed_copy)
+
+        self.assertTrue(result)
+        self.assertEqual([0, 50, 100], [percent for percent, _ in updates])
+        self.assertIn('4.00MB remaining', updates[1][1])
+        self.assertIn('0.00KB remaining', updates[2][1])
+        self.assertTrue(updates[2][1].startswith('30231\n30232\n'))
+
+    def test_copy_files_unknown_progress_can_use_empty_fixed_meter(self):
+        instance = object.__new__(XbmcBackup)
+        updates = []
+        instance.progressBar = type('Progress', (), {
+            'checkCancel': lambda _self: False,
+            'updateProgress': lambda _self, percent, message=None:
+                updates.append((percent, message)),
+        })()
+        instance.transferSize = 1
+        instance.transferLeft = 1
+
+        class Dest:
+            root_path = '/staging/'
+
+            def exists(self, _path):
+                return True
+
+            def mkdir(self, _path):
+                return True
+
+            def put(self, _source, _dest):
+                return True
+
+        class Source:
+            root_path = '/remote/'
+
+        self.assertTrue(instance._copyFiles([{
+            'file': '/remote/backup.zip', 'size': 1, 'is_dir': False,
+        }], Source(), Dest(), progress_message='progress unavailable',
+            progress_percent=0))
+        self.assertEqual([(0, 'progress unavailable')], updates)
+
     def test_backup_failure_message_reports_reason_and_failed_files(self):
         instance = object.__new__(XbmcBackup)
         instance._failure_reason = 'backup verification failed: checksum mismatch'

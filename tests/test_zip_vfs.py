@@ -13,7 +13,11 @@ install_kodi_stubs()
 
 import xbmcvfs  # noqa: E402
 from resources.lib import vfs as vfs_module  # noqa: E402
-from resources.lib.vfs import DropboxFileSystem, ZipFileSystem  # noqa: E402
+from resources.lib.vfs import (  # noqa: E402
+    DropboxFileSystem,
+    XBMCFileSystem,
+    ZipFileSystem,
+)
 from resources.lib.archive import ARCHIVE_ID, ARCHIVE_VERSION, MANIFEST_NAME  # noqa: E402
 from resources.lib.extractor import ZipExtractor  # noqa: E402
 
@@ -33,6 +37,85 @@ class LocalFile:
     def readBytes(self, size=0):
         self.read_sizes.append(size)
         return self.handle.read(size)
+
+
+class LocalReadWriteFile:
+    def __init__(self, path, mode='r'):
+        self.handle = open(path, 'wb' if mode == 'w' else 'rb')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.handle.close()
+
+    def readBytes(self, size=0):
+        return self.handle.read(size)
+
+    def write(self, content):
+        self.handle.write(content)
+        return True
+
+
+class XBMCFileSystemTests(unittest.TestCase):
+    def test_streamed_copy_reports_real_cumulative_bytes(self):
+        original_file = getattr(xbmcvfs, 'File', None)
+        original_translate = xbmcvfs.translatePath
+        xbmcvfs.File = LocalReadWriteFile
+        xbmcvfs.translatePath = lambda path: path
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                source = os.path.join(directory, 'source.bin')
+                destination = os.path.join(directory, 'destination.bin')
+                content = b'x' * 17
+                with open(source, 'wb') as handle:
+                    handle.write(content)
+                filesystem = object.__new__(XBMCFileSystem)
+                filesystem.COPY_CHUNK_BYTES = 8
+                updates = []
+
+                self.assertTrue(filesystem.put_with_progress(
+                    source, destination,
+                    lambda copied: updates.append(copied) or True))
+                with open(destination, 'rb') as handle:
+                    self.assertEqual(content, handle.read())
+                self.assertEqual([8, 16, 17], updates)
+        finally:
+            xbmcvfs.translatePath = original_translate
+            if original_file is None:
+                delattr(xbmcvfs, 'File')
+            else:
+                xbmcvfs.File = original_file
+
+    def test_streamed_copy_removes_partial_destination_on_cancel(self):
+        original_file = getattr(xbmcvfs, 'File', None)
+        original_delete = getattr(xbmcvfs, 'delete', None)
+        original_translate = xbmcvfs.translatePath
+        xbmcvfs.File = LocalReadWriteFile
+        xbmcvfs.delete = lambda path: os.remove(path) or True
+        xbmcvfs.translatePath = lambda path: path
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                source = os.path.join(directory, 'source.bin')
+                destination = os.path.join(directory, 'destination.bin')
+                with open(source, 'wb') as handle:
+                    handle.write(b'x' * 17)
+                filesystem = object.__new__(XBMCFileSystem)
+                filesystem.COPY_CHUNK_BYTES = 8
+
+                self.assertFalse(filesystem.put_with_progress(
+                    source, destination, lambda _copied: False))
+                self.assertFalse(os.path.exists(destination))
+        finally:
+            xbmcvfs.translatePath = original_translate
+            if original_delete is None:
+                delattr(xbmcvfs, 'delete')
+            else:
+                xbmcvfs.delete = original_delete
+            if original_file is None:
+                delattr(xbmcvfs, 'File')
+            else:
+                xbmcvfs.File = original_file
 
 
 class ZipFileSystemTests(unittest.TestCase):
@@ -105,6 +188,18 @@ class ZipFileSystemTests(unittest.TestCase):
 
 
 class DropboxFileSystemTests(unittest.TestCase):
+    def test_get_file_reports_blocking_download_success(self):
+        calls = []
+
+        class Client:
+            def files_download_to_file(self, destination, source):
+                calls.append((destination, source))
+
+        filesystem = object.__new__(DropboxFileSystem)
+        filesystem.client = Client()
+        self.assertTrue(filesystem.get_file('/backup.zip', '/local.zip'))
+        self.assertEqual([('/local.zip', '/backup.zip')], calls)
+
     def test_exact_chunk_size_uses_complete_single_upload(self):
         calls = []
 

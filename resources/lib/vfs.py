@@ -63,6 +63,8 @@ class Vfs:
 
 class XBMCFileSystem(Vfs):
 
+    COPY_CHUNK_BYTES = 4 * 1024 * 1024
+
     def listdir(self, directory):
         return xbmcvfs.listdir(directory)
 
@@ -71,6 +73,34 @@ class XBMCFileSystem(Vfs):
 
     def put(self, source, dest):
         return xbmcvfs.copy(xbmcvfs.translatePath(source), xbmcvfs.translatePath(dest))
+
+    def put_with_progress(self, source, dest, progress_callback):
+        """Copy through Kodi's VFS while reporting real bytes written.
+
+        This is used only when staging a restore archive locally. Kodi's
+        ordinary xbmcvfs.copy() is one blocking call with no progress
+        callback, so it cannot drive an accurate determinate meter.
+        """
+        translated_source = xbmcvfs.translatePath(source)
+        translated_dest = xbmcvfs.translatePath(dest)
+        copied = 0
+        try:
+            with xbmcvfs.File(translated_source, 'r') as source_file:
+                with xbmcvfs.File(translated_dest, 'w') as dest_file:
+                    while True:
+                        chunk = source_file.readBytes(self.COPY_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        if not dest_file.write(chunk):
+                            raise IOError('VFS write returned false')
+                        copied += len(chunk)
+                        if progress_callback(copied) is False:
+                            raise IOError('copy cancelled')
+            return True
+        except Exception as error:
+            utils.log('Unable to stream VFS copy %s: %s' % (source, error))
+            xbmcvfs.delete(translated_dest)
+            return False
 
     def rmdir(self, directory):
         return xbmcvfs.rmdir(directory, force=True)  # use force=True to make sure it works recursively
@@ -275,11 +305,15 @@ class DropboxFileSystem(Vfs):
         return result
 
     def get_file(self, source, dest):
-        if(self.client is not None):
-            # write the file locally
+        if(self.client is None):
+            return False
+        try:
+            # write the file locally; the Dropbox SDK call is blocking and
+            # does not expose incremental progress through this API.
             self.client.files_download_to_file(dest, source)
             return True
-        else:
+        except Exception as error:
+            utils.log(str(error))
             return False
 
     def _fix_slashes(self, filename):

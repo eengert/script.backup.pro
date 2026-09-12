@@ -941,3 +941,11 @@ msgstr ""
 msgctxt "#30234"
 msgid "Arctic Fuse 3 Configuration"
 msgstr ""
+
+msgctxt "#30235"
+msgid "Progress is unavailable for this source."
+msgstr ""
+
+msgctxt "#30236"
+msgid "Archive size"
+msgstr ""
