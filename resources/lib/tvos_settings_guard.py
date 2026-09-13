@@ -333,7 +333,16 @@ class TvOSSettingsGuard:
             inventory = self.host.inventory_signature()
             if inventory != self.host.property_get(
                     INVENTORY_SIGNATURE_PROPERTY):
-                return self._mark_unsafe('addon_inventory_changed')
+                # An add-on-manager mutation is a reason to distrust a
+                # cached settings wrapper, not proof that this add-on's
+                # settings are stale.  Re-read the non-sensitive signature
+                # below through a fresh wrapper before deciding whether a
+                # Kodi restart is necessary.  Accept the new inventory here
+                # so ordinary repository activity cannot poison a session.
+                self.host.log(
+                    'addon inventory changed; revalidating settings')
+                self.host.property_set(
+                    INVENTORY_SIGNATURE_PROPERTY, inventory)
 
             if self.host.property_get(SETTINGS_EDIT_PROPERTY) != '1':
                 settings = self.host.settings_signature()

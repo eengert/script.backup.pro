@@ -150,11 +150,23 @@ class RuntimeDetectionTests(unittest.TestCase):
             self.host, poll_interval=1.0)
         self.assertTrue(self.guard.initialize())
 
-    def test_unrelated_addon_inventory_change_is_unsafe(self):
+    def test_unrelated_addon_inventory_change_with_consistent_settings_is_safe(self):
         self.host.inventory_value = 'inventory-after-install'
 
+        self.assertTrue(self.guard.poll(force=True))
+        self.assertFalse(self.guard.is_unsafe())
+        self.assertEqual('inventory-after-install', self.host.properties[
+            guard_module.INVENTORY_SIGNATURE_PROPERTY])
+        self.assertIn(
+            ('addon inventory changed; revalidating settings', None),
+            self.host.logs)
+
+    def test_unrelated_addon_inventory_change_with_stale_settings_is_unsafe(self):
+        self.host.inventory_value = 'inventory-after-install'
+        self.host.settings_value = 'stale-default-view'
+
         self.assertFalse(self.guard.poll(force=True))
-        self.assertEqual('addon_inventory_changed', self.host.properties[
+        self.assertEqual('settings_view_changed', self.host.properties[
             guard_module.UNSAFE_REASON_PROPERTY])
 
     def test_same_final_inventory_stale_settings_view_is_unsafe(self):
@@ -189,7 +201,16 @@ class RuntimeDetectionTests(unittest.TestCase):
         self.host.now = 0.5
         self.assertTrue(self.guard.poll())
         self.host.now = 1.0
-        self.assertFalse(self.guard.poll())
+        self.assertTrue(self.guard.poll())
+        self.assertEqual('changed', self.host.properties[
+            guard_module.INVENTORY_SIGNATURE_PROPERTY])
+
+    def test_normal_backup_failure_does_not_poison_unchanged_session(self):
+        # Backup results are not guard inputs.  A later operation with the
+        # same fresh settings and inventory remains allowed.
+        self.assertTrue(self.guard.allow_operation())
+        self.assertTrue(self.guard.allow_operation())
+        self.assertFalse(self.guard.is_unsafe())
 
     def test_safety_check_failure_fails_closed(self):
         self.host.inventory_signature = mock.Mock(
