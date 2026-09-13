@@ -526,6 +526,111 @@ class BackupBridgeTests(unittest.TestCase):
             backup_module.utils.getString = original_get_string
             backup_module.utils.log = original_log
 
+    def test_snapshot_safety_revocation_discards_partial_zip_before_verification(self):
+        """A revoked snapshot must never turn its partial ZIP into a backup."""
+        events = []
+        revoked = [False]
+        testcase = self
+
+        class LocalZip:
+            root_path = '/backup/'
+
+            def set_root(self, path):
+                self.root_path = path
+
+            def cleanup(self):
+                events.append('zip_closed')
+
+        class Staging:
+            def set_root(self, _path):
+                pass
+
+            def rmfile(self, path):
+                events.append(('staging_removed', path))
+                return True
+
+        class Remote:
+            root_path = '/remote/'
+
+            def __getattr__(self, name):
+                testcase.fail('remote operation after safety revocation: %s' % name)
+
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = object()  # admitted immutable snapshot
+        instance.settings_guard = object()
+        instance._copy_failures = []
+        instance._failure_reason = None
+        instance._active_artifact = None
+        instance._setupVFS = lambda *_args: True
+        instance.remote_vfs = LocalZip()
+        instance.saved_remote_vfs = Remote()
+        instance.xbmc_vfs = Staging()
+        instance.ZIP_TEMP_PATH = '/staging'
+        instance.transferSize = 0
+        instance._allowBackupSelection = lambda _action: True
+        instance._setting_int = lambda _name: 0
+        instance._setting_bool = lambda name: name == 'compress_backups'
+        instance._collectBackupFiles = lambda: [{
+            'source': 'special://home/', 'dest': '', 'name': 'addons',
+            'files': [{'file': '/profile/addons/a.py', 'size': 1,
+                       'is_dir': False}],
+        }]
+        instance._createValidationFile = lambda _groups: True
+        instance._operation_revoked = lambda: revoked[0]
+        instance._copyFiles = lambda *_args, **_kwargs: (
+            revoked.__setitem__(0, True) or False)
+        instance._reportBackupFailure = lambda reason=None: events.append(
+            ('restart_required', reason))
+
+        original_zip = backup_module.ZipFileSystem
+        original_verify = backup_module.verify_zip_archive
+        original_log = backup_module.utils.log
+        original_string = backup_module.utils.getString
+        try:
+            backup_module.ZipFileSystem = LocalZip
+            backup_module.verify_zip_archive = lambda *_args, **_kwargs: self.fail(
+                'partial ZIP must not be verified')
+            backup_module.utils.log = lambda *_args: None
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+
+            self.assertFalse(instance._runBackup())
+        finally:
+            backup_module.ZipFileSystem = original_zip
+            backup_module.verify_zip_archive = original_verify
+            backup_module.utils.log = original_log
+            backup_module.utils.getString = original_string
+
+        self.assertEqual(
+            ['zip_closed', ('staging_removed',
+                            '/staging/xbmc_backup_temp.zip'),
+             ('restart_required', 'string:30237')], events)
+
+    def test_safety_revocation_discards_partial_folder_without_rotation(self):
+        class Remote:
+            def __init__(self):
+                self.removed = []
+
+            def rmdir(self, path):
+                self.removed.append(path)
+                return True
+
+        instance = object.__new__(XbmcBackup)
+        instance.remote_vfs = Remote()
+        instance._active_artifact = '/backup/'
+        instance._active_artifact_compressed = False
+        instance._reportBackupFailure = lambda reason=None: setattr(
+            instance, 'reported_reason', reason)
+        original_string = backup_module.utils.getString
+        try:
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+            self.assertFalse(instance._abortRevokedBackup(False))
+        finally:
+            backup_module.utils.getString = original_string
+
+        self.assertEqual(['/backup/'], instance.remote_vfs.removed)
+        self.assertIsNone(instance._active_artifact)
+        self.assertEqual('string:30237', instance.reported_reason)
+
     def test_inner_selection_gate_blocks_race_after_af3_capture(self):
         """Example Room: service may become unsafe during AF3 capture."""
         class Guard:

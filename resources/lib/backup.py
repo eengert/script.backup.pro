@@ -281,6 +281,7 @@ class XbmcBackup:
 
             orig_base_path = self.remote_vfs.root_path
             backup_success = True
+            safety_cancelled = False
             compressing = self._setting_bool("compress_backups")
             remote_artifact = None if compressing else orig_base_path
 
@@ -291,18 +292,30 @@ class XbmcBackup:
                     utils.log('Backup stopped: Kodi restart required',
                               xbmc.LOGWARNING)
                     backup_success = False
+                    safety_cancelled = True
                     break
                 self.xbmc_vfs.set_root(xbmcvfs.translatePath(fileGroup['source']))
                 self.remote_vfs.set_root(fileGroup['dest'] + fileGroup['name'])
                 filesCopied = self._copyFiles(fileGroup['files'], self.xbmc_vfs, self.remote_vfs)
 
                 if(not filesCopied):
-                    utils.log(utils.getString(30092))
                     backup_success = False
+                    if self._operation_revoked():
+                        safety_cancelled = True
+                        break
+                    utils.log(utils.getString(30092))
 
             # reset remote and xbmc vfs
             self.xbmc_vfs.set_root("special://home/")
             self.remote_vfs.set_root(orig_base_path)
+
+            # A snapshot-backed tvOS operation may be revoked while its
+            # staging ZIP is still being written. That ZIP is deliberately
+            # incomplete: do not rename, validate, or upload it as though it
+            # were a completed archive. Ordinary copy failures and user
+            # cancellations intentionally keep their established behavior.
+            if safety_cancelled:
+                return self._abortRevokedBackup(compressing)
 
             if(compressing):
                 fileManager = FileManager(
@@ -340,6 +353,13 @@ class XbmcBackup:
                         self._failure_reason = (
                             'local archive verification failed: %s' % error)
                     fileManager.addFile(zip_name)
+
+                # A revocation can arrive after a valid local ZIP has been
+                # sealed but before any destination work starts. It still
+                # must not be uploaded or presented as a completed backup.
+                if backup_success and self._operation_revoked():
+                    return self._abortRevokedBackup(
+                        compressing, local_archive=zip_name)
 
                 # set root to data dir home and reset remote
                 self.xbmc_vfs.set_root(self.ZIP_TEMP_PATH)
@@ -1500,6 +1520,33 @@ class XbmcBackup:
                 self.remote_vfs.rmdir(artifact_path)
         self._active_artifact = None
         self._reportBackupFailure()
+        return False
+
+    def _abortRevokedBackup(self, compressing, local_archive=None):
+        """Discard an incomplete backup after a tvOS safety revocation."""
+        if compressing:
+            try:
+                # ZipFileSystem must be closed before its staging file can be
+                # removed on tvOS. This is still the local staging VFS here;
+                # the real destination has not been selected for upload.
+                self.remote_vfs.cleanup()
+            except Exception as error:
+                utils.log('Backup cancellation cleanup failed: %s' % error,
+                          xbmc.LOGWARNING)
+            temporary_zip = local_archive or os.path.join(
+                self.ZIP_TEMP_PATH, 'xbmc_backup_temp.zip')
+            try:
+                self.xbmc_vfs.rmfile(temporary_zip)
+            except Exception as error:
+                utils.log('Unable to remove incomplete backup ZIP: %s' % error,
+                          xbmc.LOGWARNING)
+            self.remote_vfs = self.saved_remote_vfs
+        else:
+            # Folder backups write directly to their timestamp directory;
+            # discard that incomplete directory before reporting revocation.
+            self._discardActiveArtifact()
+        self._active_artifact = None
+        self._reportBackupFailure(utils.getString(30237))
         return False
 
     def _recordLastBackup(self, artifact_path):
