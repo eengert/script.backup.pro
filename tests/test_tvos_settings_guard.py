@@ -247,6 +247,58 @@ class RuntimeDetectionTests(unittest.TestCase):
         self.assertTrue(self.guard.allow_operation())
         self.assertFalse(self.guard.is_unsafe())
 
+    def test_allowed_operation_logs_named_decision(self):
+        self.assertTrue(self.guard.allow_operation('manual_backup'))
+
+        self.assertIn(
+            ('operation guard: action=manual_backup result=allowed '
+             'reason=allowed unsafe_before=false comparison=performed', None),
+            self.host.logs)
+
+    def test_existing_unsafe_property_logs_its_reason(self):
+        self.host.properties[guard_module.UNSAFE_PROPERTY] = '1'
+        self.host.properties[guard_module.UNSAFE_REASON_PROPERTY] = (
+            'settings_view_changed')
+
+        self.assertFalse(self.guard.allow_operation('restore'))
+        self.assertIn(
+            ('operation guard: action=restore result=restart_required '
+             'reason=existing_unsafe_property unsafe_before=true '
+             'comparison=skipped existing_reason=settings_view_changed', None),
+            self.host.logs)
+
+    def test_bootstrap_restart_required_logs_named_reason(self):
+        host = FakeHost(marker=None)
+        guard = guard_module.TvOSSettingsGuard(host)
+
+        self.assertFalse(guard.allow_operation('program_open'))
+        self.assertIn(
+            ('operation guard: action=program_open result=restart_required '
+             'reason=bootstrap unsafe_before=false comparison=skipped', None),
+            host.logs)
+
+    def test_operation_boundary_logs_fresh_selection_and_baseline_difference(self):
+        host = FakeObservationHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+        self.assertTrue(guard.initialize())
+        host.diagnostic_value = (
+            ('backup_database', True),
+            ('backup_thumbnails', True),
+            ('remote_path_configured', True),
+        )
+
+        guard.log_operation_boundary('manual_backup')
+
+        messages = '\n'.join(message for message, _level in host.logs)
+        self.assertIn('action=manual_backup', messages)
+        self.assertIn('selection=backup_addons=false', messages)
+        self.assertIn('backup_database=true', messages)
+        self.assertIn('backup_thumbnails=true', messages)
+        self.assertIn('changes=backup_database:false->true,backup_thumbnails:false->true',
+                      messages)
+        for forbidden in ('smb://', 'password', 'secret', 'private'):
+            self.assertNotIn(forbidden, messages)
+
     def test_safety_check_failure_fails_closed(self):
         self.host.inventory_signature = mock.Mock(
             side_effect=RuntimeError('rpc unavailable'))
@@ -303,6 +355,22 @@ class SignaturePrivacyTests(unittest.TestCase):
         self.assertNotEqual(
             guard_module.normalized_settings_signature(configured),
             guard_module.normalized_settings_signature(cleared))
+
+    def test_simple_selection_diagnostic_excludes_sensitive_values(self):
+        addon = self.Addon({
+            'backup_database': True,
+            'backup_thumbnails': False,
+            'remote_path': 'smb://user:password@server/private',
+            'dropbox_secret': 'private-secret',
+        })
+
+        state = guard_module.simple_selection_state(
+            guard_module.diagnostic_settings_state(addon))
+        document = json.dumps(state)
+        self.assertIn('backup_database', document)
+        self.assertIn('backup_thumbnails', document)
+        for forbidden in ('remote_path', 'password', 'private-secret'):
+            self.assertNotIn(forbidden, document)
 
     def test_inventory_is_stable_across_enumeration_order(self):
         first = json.dumps({'result': {'addons': [

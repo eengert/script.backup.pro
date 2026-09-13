@@ -102,7 +102,11 @@ if("mode" in params):
 # add-on-manager mutation. Gate before XbmcBackup construction because its
 # constructor reads destination and staging settings immediately.
 settingsGuard = TvOSSettingsGuard()
-if not settingsGuard.allow_operation():
+requested_action = {
+    BACKUP: 'manual_backup',
+    RESTORE: 'restore',
+}.get(mode, 'program_open')
+if not settingsGuard.allow_operation(requested_action):
     xbmcgui.Dialog().ok(utils.getString(30010), utils.getString(30237))
     raise SystemExit(0)
 
@@ -132,6 +136,18 @@ elif(mode == -1):
 
 # check which mode should be run
 if(mode != -1):
+
+    action_name = {
+        BACKUP: 'manual_backup',
+        RESTORE: 'restore',
+        SETTINGS: 'open_settings',
+        ADVANCED_EDITOR: 'advanced_editor',
+        LAUNCHER: 'launcher',
+        STATUS: 'status',
+    }.get(mode, 'help')
+    # Read-only diagnostic snapshot immediately before the selected action.
+    # It does not create another guard gate or alter its decision.
+    settingsGuard.log_operation_boundary(action_name)
 
     if(mode == SETTINGS):
         # open the settings dialog

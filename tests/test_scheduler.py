@@ -176,6 +176,7 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
 
         self.assertFalse(result)
         ctor.assert_not_called()
+        guard.allow_operation.assert_called_once_with('scheduler_backup')
         self.assertIn('string:30237', fake_utils.notifications)
 
 

@@ -113,11 +113,14 @@ class BackupScheduler:
 
     def doScheduledBackup(self, progress_mode):
         guard = getattr(self, 'settings_guard', None)
-        if guard is not None and not guard.allow_operation():
+        if guard is not None and not guard.allow_operation('scheduler_backup'):
             utils.log('scheduled backup blocked: Kodi restart required',
                       xbmc.LOGWARNING)
             utils.showNotification(utils.getString(30237))
             return False
+
+        if guard is not None:
+            guard.log_operation_boundary('scheduler_backup')
 
         if(progress_mode != 2):
             utils.showNotification(utils.getString(30053))

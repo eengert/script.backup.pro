@@ -68,6 +68,17 @@ _PRESENCE_SETTINGS = (
     'remote_path_2',
     'zip_temp_path',
 )
+_SIMPLE_SELECTION_SETTINGS = (
+    'backup_addons',
+    'backup_addon_data',
+    'backup_database',
+    'backup_game_saves',
+    'backup_playlists',
+    'backup_profiles',
+    'backup_thumbnails',
+    'backup_config',
+    'backup_skin_config',
+)
 
 
 class SettingsSafetyError(Exception):
@@ -113,6 +124,13 @@ def diagnostic_settings_state(addon):
         values.append((setting_id + '_configured',
                        bool(addon.getSetting(setting_id).strip())))
     return tuple(values)
+
+
+def simple_selection_state(diagnostic):
+    """Keep only explicitly approved boolean selection fields for logging."""
+    values = dict(diagnostic or ())
+    return tuple((name, bool(values.get(name, False)))
+                 for name in _SIMPLE_SELECTION_SETTINGS)
 
 
 def normalized_inventory_signature(response_text):
@@ -273,6 +291,8 @@ class TvOSSettingsGuard:
         self.poll_interval = poll_interval
         self._last_poll = None
         self._active = self.host.is_tvos()
+        self._last_comparison_performed = False
+        self._last_changed_fields = []
 
     def is_unsafe(self):
         return (self._active
@@ -363,13 +383,90 @@ class TvOSSettingsGuard:
                              if current[name] != previous.get(name))
         except (TypeError, ValueError):
             changed = []
+        self._last_changed_fields = changed
         if changed:
             self.host.log('settings signature fields changed: ' +
                           ','.join(changed))
         else:
             self.host.log('settings signature changed outside diagnostic fields')
 
+    def _diagnostic_baseline(self):
+        try:
+            return dict(json.loads(self.host.property_get(
+                SETTINGS_DIAGNOSTIC_PROPERTY)))
+        except (TypeError, ValueError):
+            return {}
+
+    @staticmethod
+    def _format_selection_state(state):
+        return ' '.join('%s=%s' % (name, str(value).lower())
+                        for name, value in state)
+
+    def _log_operation_boundary(self, action):
+        """Record a read-only fresh-wrapper selection snapshot for tvOS.
+
+        This deliberately has no return value used by Backup Pro. It must
+        never alter the fail-closed guard decision or the planner's inputs.
+        """
+        if not self._active:
+            return
+        try:
+            _signature, diagnostic = self._settings_observation()
+            current = simple_selection_state(diagnostic)
+            baseline = self._diagnostic_baseline()
+            baseline_state = tuple(
+                (name, bool(baseline[name]))
+                for name in _SIMPLE_SELECTION_SETTINGS if name in baseline)
+            changes = []
+            if baseline:
+                for name, value in current:
+                    if name in baseline and value != bool(baseline[name]):
+                        changes.append('%s:%s->%s' % (
+                            name, str(bool(baseline[name])).lower(),
+                            str(value).lower()))
+            match = bool(baseline) and not changes
+            self.host.log(
+                'operation boundary: action=%s pid=%s version=%s '
+                'baseline=%s selection_baseline_match=%s selection=%s%s' % (
+                    action, self.host.pid(), self.host.version(),
+                    'present' if baseline else 'missing', str(match).lower(),
+                    self._format_selection_state(current),
+                    (' baseline_selection=%s changes=%s' % (
+                        self._format_selection_state(baseline_state),
+                        ','.join(changes))) if baseline else ''))
+        except Exception as exc:
+            self.host.log(
+                'operation boundary: action=%s diagnostic_failed=%s' % (
+                    action, type(exc).__name__))
+
+    def log_operation_boundary(self, action):
+        """Expose a read-only diagnostic snapshot immediately before work."""
+        self._log_operation_boundary(action)
+
+    def _log_operation_decision(self, action, allowed, unsafe_before):
+        if not self._active:
+            return
+        if allowed:
+            reason = 'allowed'
+        elif unsafe_before:
+            reason = 'existing_unsafe_property'
+        else:
+            reason = self.host.property_get(UNSAFE_REASON_PROPERTY) or 'unknown'
+        existing_reason = self.host.property_get(UNSAFE_REASON_PROPERTY)
+        self.host.log(
+            'operation guard: action=%s result=%s reason=%s '
+            'unsafe_before=%s comparison=%s%s%s' % (
+                action, 'allowed' if allowed else 'restart_required', reason,
+                str(unsafe_before).lower(),
+                'performed' if self._last_comparison_performed else 'skipped',
+                ' changed_fields=' + ','.join(self._last_changed_fields)
+                if self._last_changed_fields else '',
+                ' existing_reason=' + existing_reason
+                if unsafe_before and existing_reason else ''))
+
     def poll(self, force=False):
+        self._last_comparison_performed = False
+        self._last_changed_fields = []
         if not self._active:
             return True
         if not self.initialize():
@@ -398,6 +495,7 @@ class TvOSSettingsGuard:
 
             if self.host.property_get(SETTINGS_EDIT_PROPERTY) != '1':
                 settings, diagnostic = self._settings_observation()
+                self._last_comparison_performed = True
                 if settings != self.host.property_get(
                         SETTINGS_SIGNATURE_PROPERTY):
                     self._log_diagnostic_difference(diagnostic)
@@ -409,8 +507,11 @@ class TvOSSettingsGuard:
             return self._mark_unsafe('safety_check_failed')
         return True
 
-    def allow_operation(self):
-        return self.poll(force=True)
+    def allow_operation(self, action='operation'):
+        unsafe_before = self.is_unsafe()
+        allowed = self.poll(force=True)
+        self._log_operation_decision(action, allowed, unsafe_before)
+        return allowed
 
     def begin_settings_edit(self):
         if self._active:

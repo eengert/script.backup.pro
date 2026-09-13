@@ -9,7 +9,7 @@ class ProgramEntryGuardTests(unittest.TestCase):
     def test_guard_runs_before_backup_object_is_constructed(self):
         source = (ROOT / 'default.py').read_text()
 
-        guard = source.index('settingsGuard.allow_operation()')
+        guard = source.index('settingsGuard.allow_operation(requested_action)')
         construction = source.index('backup = XbmcBackup()')
         dispatch = source.index('if(mode == SETTINGS):')
 
@@ -35,6 +35,16 @@ class ProgramEntryGuardTests(unittest.TestCase):
 
         self.assertLess(begin, opened)
         self.assertLess(opened, finish)
+
+    def test_each_dispatched_action_records_a_read_only_boundary_snapshot(self):
+        source = (ROOT / 'default.py').read_text()
+
+        snapshot = source.index('settingsGuard.log_operation_boundary(action_name)')
+        dispatch = source.index('if(mode == SETTINGS):')
+        self.assertLess(snapshot, dispatch)
+        for action in ('manual_backup', 'restore', 'open_settings',
+                       'advanced_editor', 'status'):
+            self.assertIn(action, source)
 
 
 if __name__ == '__main__':
