@@ -11,6 +11,12 @@ TMDB_HELPER_CACHE_DIRS = (
     'colors_v2',
 )
 
+SQLITE_SIDECAR_SUFFIXES = ('-shm', '-wal', '-journal')
+SQLITE_SIDECAR_EXCLUSION = {
+    'adapter': 'sqlite',
+    'reason': 'Volatile SQLite sidecar file',
+}
+
 _SCHEME = re.compile(r'^([A-Za-z][A-Za-z0-9+.-]*://)(.*)$')
 
 
@@ -149,6 +155,14 @@ class FilePlanner:
                 return rule
         return None
 
+    @staticmethod
+    def _sqlite_sidecar_rule(path):
+        """Return the shared exclusion rule for transient SQLite companions."""
+        filename = path.rsplit('/', 1)[-1].casefold()
+        if filename.endswith(SQLITE_SIDECAR_SUFFIXES):
+            return SQLITE_SIDECAR_EXCLUSION
+        return None
+
     def walk(self):
         for root in self.root_dirs:
             rule = self._matching_rule(root['path'])
@@ -178,7 +192,7 @@ class FilePlanner:
 
         for name in sorted(files):
             path = self._join(directory, name)
-            rule = self._matching_rule(path)
+            rule = self._matching_rule(path) or self._sqlite_sidecar_rule(path)
             if rule:
                 self._record_excluded(path, rule, is_file=True)
                 continue

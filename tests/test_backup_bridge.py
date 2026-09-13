@@ -1200,6 +1200,28 @@ class BackupBridgeTests(unittest.TestCase):
         self.assertEqual(1.0, manager.fileSize())
         self.assertEqual(root, manager.getFiles()[0]['file'])
 
+    def test_backup_file_manager_omits_sqlite_sidecars_from_manifest_plan(self):
+        root = '/profile/addon_data/example'
+        manager = FileManager(FakeVfs({
+            root: ([], ['settings.db', 'settings.db-shm', 'settings.db-wal']),
+        }, {
+            root + '/settings.db': 1,
+            root + '/settings.db-shm': 1,
+            root + '/settings.db-wal': 1,
+        }))
+        manager.addDir({'type': 'include', 'path': root, 'recurse': True})
+        manager.walk()
+        group = {
+            'name': 'addon_data', 'source': root, 'plan_root': root,
+            'files': manager.getFiles(),
+        }
+
+        manifest = build_manifest(
+            [group], lambda _path: ('a' * 64, 1))
+        self.assertEqual(
+            ['settings.db'],
+            [item['path'] for item in manifest['directories'][0]['files']])
+
     def test_restore_accepts_manifest_kodi_version_field(self):
         document = {
             'archive_id': ARCHIVE_ID,

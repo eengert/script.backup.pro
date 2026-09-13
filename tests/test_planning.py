@@ -121,6 +121,47 @@ class PlannerTests(unittest.TestCase):
             [self.tmdb + '/blur_v3', self.tmdb + '/crop_v2'],
             [item['path'] for item in summary['exclusions']])
 
+    def test_planner_excludes_volatile_sqlite_sidecars_and_counts_them(self):
+        root = '/profile/addon_data/plugin.video.redlight/databases'
+        vfs = FakeVfs({
+            root: ([], [
+                'settings.db', 'settings.db-shm', 'settings.db-wal',
+                'settings.db-journal', 'journal.txt', 'walnut.dat',
+                'shm_notes.txt', 'other.db',
+            ]),
+        }, {
+            root + '/settings.db': 10,
+            root + '/settings.db-shm': 2,
+            root + '/settings.db-wal': 3,
+            root + '/settings.db-journal': 4,
+            root + '/journal.txt': 5,
+            root + '/walnut.dat': 6,
+            root + '/shm_notes.txt': 7,
+            root + '/other.db': 8,
+        })
+        planner = FilePlanner(vfs)
+        planner.addDir({'type': 'include', 'path': root, 'recurse': True})
+        planner.walk()
+
+        files = [item['file'] for item in planner.fileArray
+                 if not item['is_dir']]
+        self.assertEqual([
+            root + '/journal.txt', root + '/other.db', root + '/settings.db',
+            root + '/shm_notes.txt', root + '/walnut.dat',
+        ], files)
+        summary = planner.summary()
+        self.assertEqual(36, summary['included_kib'])
+        self.assertEqual(5, summary['included_files'])
+        self.assertEqual(9, summary['excluded_kib'])
+        self.assertEqual(3, summary['excluded_files'])
+        self.assertEqual([
+            root + '/settings.db-journal', root + '/settings.db-shm',
+            root + '/settings.db-wal',
+        ], [item['path'] for item in summary['exclusions']])
+        self.assertTrue(all(item['adapter'] == 'sqlite'
+                            and item['reason'] == 'Volatile SQLite sidecar file'
+                            for item in summary['exclusions']))
+
     def test_summary_reports_groups_and_largest_top_level_directory(self):
         planner = FilePlanner(self.vfs)
         planner.addDir({'type': 'include', 'path': self.root, 'recurse': True})
