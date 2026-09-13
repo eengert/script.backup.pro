@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.24
+
+### Fixed
+
+- Improved Apple TV post-add-on-change settings protection: Backup Pro now
+  revalidates saved settings and only requires a Kodi restart when the
+  settings view is actually inconsistent.
+
 ## Version 0.9.23
 
 ### Added
