@@ -591,11 +591,25 @@ class TvOSSettingsGuard:
         self._log_operation_decision(action, allowed, unsafe_before)
         return allowed
 
-    def operation_revoked(self):
-        """Read only shared state; never refresh operation settings."""
-        return (self._active and (
-            self.is_unsafe() or self.host.property_get(
-                SAFETY_READY_PROPERTY) == 'initializing'))
+    def operation_revoked(self, admitted_snapshot=False):
+        """Read shared state without ever refreshing operation settings.
+
+        An admitted backup snapshot is complete and immutable.  A later
+        stale-settings observation therefore still poisons the Kodi session
+        for future operations, but cannot change that already-admitted plan.
+        Other unsafe reasons remain revocations because they indicate a
+        lifecycle or safety condition the snapshot does not make safe.
+        """
+        if not self._active:
+            return False
+        if self.host.property_get(SAFETY_READY_PROPERTY) == 'initializing':
+            return True
+        if not self.is_unsafe():
+            return False
+        return not (
+            admitted_snapshot
+            and self.host.property_get(UNSAFE_REASON_PROPERTY)
+            == 'settings_view_changed')
 
     def admit_backup_snapshot(self, capture):
         """Admit one complete immutable backup configuration or return None.

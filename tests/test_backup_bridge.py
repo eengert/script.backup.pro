@@ -605,6 +605,54 @@ class BackupBridgeTests(unittest.TestCase):
                             '/staging/xbmc_backup_temp.zip'),
              ('restart_required', 'string:30237')], events)
 
+    def test_admitted_snapshot_ignores_later_stale_settings_revocation(self):
+        class Guard:
+            def operation_revoked(self, admitted_snapshot=False):
+                self.admitted_snapshot = admitted_snapshot
+                return False
+
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = object()
+        instance.settings_guard = Guard()
+
+        self.assertFalse(instance._operation_revoked())
+        self.assertTrue(instance.settings_guard.admitted_snapshot)
+
+    def test_admitted_snapshot_selection_boundary_allows_stale_settings_only(self):
+        class Guard:
+            def __init__(self, revoked):
+                self.revoked = revoked
+                self.admitted_snapshot = None
+
+            def operation_revoked(self, admitted_snapshot=False):
+                self.admitted_snapshot = admitted_snapshot
+                return self.revoked
+
+        safe_guard = Guard(False)
+        safe = object.__new__(XbmcBackup)
+        safe.operation_settings = object()
+        safe.settings_guard = safe_guard
+        self.assertTrue(safe._allowBackupSelection('selection'))
+        self.assertTrue(safe_guard.admitted_snapshot)
+
+        revoked_guard = Guard(True)
+        revoked = object.__new__(XbmcBackup)
+        revoked.operation_settings = object()
+        revoked.settings_guard = revoked_guard
+        original_log = backup_module.utils.log
+        original_notify = backup_module.utils.showNotification
+        original_string = backup_module.utils.getString
+        try:
+            backup_module.utils.log = lambda *_args: None
+            backup_module.utils.showNotification = lambda _message: None
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+            self.assertFalse(revoked._allowBackupSelection('selection'))
+        finally:
+            backup_module.utils.log = original_log
+            backup_module.utils.showNotification = original_notify
+            backup_module.utils.getString = original_string
+        self.assertTrue(revoked_guard.admitted_snapshot)
+
     def test_safety_revocation_discards_partial_folder_without_rotation(self):
         class Remote:
             def __init__(self):

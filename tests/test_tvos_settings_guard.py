@@ -401,6 +401,34 @@ class RuntimeDetectionTests(unittest.TestCase):
         self.assertIsNone(self.guard.admit_backup_snapshot(capture))
         self.assertFalse(self.guard.is_unsafe())
 
+    def test_admitted_snapshot_continues_after_later_settings_view_change(self):
+        snapshot = FakeSnapshot('stable', 'settings-a')
+        self.assertEqual(
+            snapshot, self.guard.admit_backup_snapshot(
+                mock.Mock(side_effect=(snapshot, snapshot))))
+
+        self.host.settings_value = 'stale-default-view'
+        self.assertFalse(self.guard.poll(force=True))
+        self.assertTrue(self.guard.is_unsafe())
+        self.assertEqual('settings_view_changed', self.host.properties[
+            guard_module.UNSAFE_REASON_PROPERTY])
+        self.assertFalse(self.guard.operation_revoked(admitted_snapshot=True))
+        self.assertTrue(self.guard.operation_revoked())
+        self.assertFalse(self.guard.allow_operation('manual_backup'))
+        self.assertFalse(self.guard.allow_operation('restore'))
+
+    def test_admitted_snapshot_still_stops_for_lifecycle_or_readiness_risks(self):
+        for reason in ('live_update', 'bootstrap', 'invalid',
+                       'safety_check_failed'):
+            with self.subTest(reason=reason):
+                self.host.properties[guard_module.UNSAFE_PROPERTY] = '1'
+                self.host.properties[guard_module.UNSAFE_REASON_PROPERTY] = reason
+                self.assertTrue(
+                    self.guard.operation_revoked(admitted_snapshot=True))
+                self.host.properties.clear()
+        self.host.properties[guard_module.SAFETY_READY_PROPERTY] = 'initializing'
+        self.assertTrue(self.guard.operation_revoked(admitted_snapshot=True))
+
 
 class SignaturePrivacyTests(unittest.TestCase):
     class Addon:

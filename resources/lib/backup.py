@@ -1293,7 +1293,7 @@ class XbmcBackup:
         if guard is None:
             return True
         if getattr(self, 'operation_settings', None) is not None:
-            if not guard.operation_revoked():
+            if not guard.operation_revoked(admitted_snapshot=True):
                 return True
             utils.log('backup selection blocked: Kodi restart required',
                       xbmc.LOGWARNING)
@@ -1781,7 +1781,7 @@ class XbmcBackup:
         guard = getattr(self, 'settings_guard', None)
         return (getattr(self, 'operation_settings', None) is not None
                 and guard is not None
-                and guard.operation_revoked())
+                and guard.operation_revoked(admitted_snapshot=True))
 
     def _hashFile(self, path, cancellable=False):
         with xbmcvfs.File(xbmcvfs.translatePath(path), 'r') as source:

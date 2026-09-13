@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.33
+
+### Fixed
+
+- An already-validated Apple TV backup can now finish using its immutable
+  settings snapshot if Kodi's live settings view later becomes inconsistent.
+  A Kodi restart is still required before any subsequent Backup Pro operation.
+- Updated the restart-required message to describe inconsistent Kodi settings
+  rather than assuming an add-on change.
+
 ## Version 0.9.32
 
 ### Fixed
