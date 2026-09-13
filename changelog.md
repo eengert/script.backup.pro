@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.29
+
+### Added
+
+- Added a final Apple TV settings-safety check immediately before backup file
+  selection so a stale settings view cannot reach backup planning.
+
 ## Version 0.9.28
 
 ### Fixed
