@@ -431,6 +431,101 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
 
 
 class BackupBridgeTests(unittest.TestCase):
+    def _selection_boundary_instance(self, guard):
+        instance = object.__new__(XbmcBackup)
+        instance.settings_guard = guard
+        instance._copy_failures = []
+        instance._failure_reason = None
+        instance._setupVFS = lambda *_args: True
+        instance.remote_vfs = type('Remote', (), {
+            'root_path': '/backup/',
+            'exists': lambda _self, _path: False,
+            'mkdir': lambda _self, _path: True,
+        })()
+        instance._vfs_closed = False
+        instance._closeVFS = lambda: setattr(instance, '_vfs_closed', True)
+        return instance
+
+    def test_unsafe_selection_boundary_aborts_before_any_selection_read(self):
+        guard = type('Guard', (), {
+            'allow_operation': lambda _self, action: action != (
+                'backup_selection_boundary'),
+            'log_operation_boundary': lambda *_args: None,
+        })()
+        instance = self._selection_boundary_instance(guard)
+        selection_reads = []
+        collected = []
+        original_get_bool = backup_module.utils.getSettingBool
+        original_notify = backup_module.utils.showNotification
+        original_log = backup_module.utils.log
+        original_string = backup_module.utils.getString
+        try:
+            backup_module.utils.getSettingBool = lambda name: (
+                selection_reads.append(name) or False)
+            backup_module.utils.showNotification = lambda _message: None
+            backup_module.utils.log = lambda *_args: None
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+            instance._collectBackupFiles = lambda: collected.append(True)
+
+            self.assertFalse(instance._runBackup())
+            self.assertEqual([], collected)
+            self.assertEqual([], selection_reads)
+            self.assertTrue(instance._vfs_closed)
+        finally:
+            backup_module.utils.getSettingBool = original_get_bool
+            backup_module.utils.showNotification = original_notify
+            backup_module.utils.log = original_log
+            backup_module.utils.getString = original_string
+
+    def test_safe_selection_boundary_reaches_collection(self):
+        guard = type('Guard', (), {
+            'allow_operation': lambda _self, _action: True,
+            'log_operation_boundary': lambda *_args: None,
+        })()
+        instance = self._selection_boundary_instance(guard)
+        collected = []
+        original_get_setting = backup_module.utils.getSetting
+        original_get_string = backup_module.utils.getString
+        original_log = backup_module.utils.log
+        try:
+            backup_module.utils.getSetting = lambda _name: '0'
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+            backup_module.utils.log = lambda *_args: None
+
+            def collect():
+                collected.append(True)
+                raise RuntimeError('stop after selection boundary')
+
+            instance._collectBackupFiles = collect
+            with self.assertRaisesRegex(RuntimeError, 'stop after selection'):
+                instance._runBackup()
+            self.assertEqual([True], collected)
+        finally:
+            backup_module.utils.getSetting = original_get_setting
+            backup_module.utils.getString = original_get_string
+            backup_module.utils.log = original_log
+
+    def test_no_guard_preserves_non_tvos_selection_path(self):
+        instance = self._selection_boundary_instance(None)
+        collected = []
+        original_get_setting = backup_module.utils.getSetting
+        original_get_string = backup_module.utils.getString
+        original_log = backup_module.utils.log
+        try:
+            backup_module.utils.getSetting = lambda _name: '0'
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+            backup_module.utils.log = lambda *_args: None
+            instance._collectBackupFiles = lambda: collected.append(True) or []
+            instance._createValidationFile = lambda _groups: False
+            instance._finalizeBackup = lambda *_args, **_kwargs: False
+
+            self.assertFalse(instance._runBackup())
+            self.assertEqual([True], collected)
+        finally:
+            backup_module.utils.getSetting = original_get_setting
+            backup_module.utils.getString = original_get_string
+            backup_module.utils.log = original_log
+
     def test_simple_selection_honors_database_and_thumbnail_settings(self):
         """Regression for Example Room: unchecked sets must never be planned."""
         original_bool = backup_module.utils.getSettingBool

@@ -105,7 +105,11 @@ class XbmcBackup:
     restore_point = None
     skip_advanced = False   # if we should check for the existance of advancedsettings in the restore
 
-    def __init__(self):
+    def __init__(self, settings_guard=None):
+        # Program and scheduler pass their shared tvOS guard here. It remains
+        # optional so restore/status and non-tvOS callers retain their current
+        # behavior.
+        self.settings_guard = settings_guard
         self.xbmc_vfs = XBMCFileSystem(xbmcvfs.translatePath('special://home'))
         self.ZIP_TEMP_PATH = xbmcvfs.translatePath(utils.getSetting('zip_temp_path'))
         self.transferSize = 0
@@ -237,6 +241,21 @@ class XbmcBackup:
                     return False
                 self._active_artifact = self.remote_vfs.root_path
                 self._active_artifact_compressed = False
+
+            # VFS setup can take long enough for the separate tvOS service to
+            # discover an unsafe/default settings view after Program's earlier
+            # gate. This is the last safe point before any backup_* selection
+            # value is consumed by _collectBackupFiles().
+            guard = getattr(self, 'settings_guard', None)
+            if (guard is not None
+                    and not guard.allow_operation('backup_selection_boundary')):
+                utils.log('backup selection blocked: Kodi restart required',
+                          xbmc.LOGWARNING)
+                utils.showNotification(utils.getString(30237))
+                self._closeVFS()
+                return False
+            if guard is not None:
+                guard.log_operation_boundary('backup_selection_boundary')
 
             utils.log(utils.getString(30051))
             utils.log('File Selection Type: ' + str(utils.getSetting('backup_selection_type')))

@@ -113,7 +113,7 @@ if not settingsGuard.allow_operation(requested_action):
 # a pending Arctic Fuse 3 restore takes precedence over every other Program
 # action, including reading which mode was requested. If it is resolved (or
 # never existed), fall through to normal Program behavior below.
-backup = XbmcBackup()
+backup = XbmcBackup(settings_guard=settingsGuard)
 skinRecoveryPending = backup.resolvePendingSkinRestore()
 
 # if mode wasn't passed in as arg, get from user

@@ -125,7 +125,7 @@ class BackupScheduler:
         if(progress_mode != 2):
             utils.showNotification(utils.getString(30053))
 
-        backup = XbmcBackup()
+        backup = XbmcBackup(settings_guard=guard)
         # background/scheduled execution must never open a recovery dialog
         # or switch skins; only log that interactive recovery is pending.
         backup.checkPendingSkinRestoreBackground()

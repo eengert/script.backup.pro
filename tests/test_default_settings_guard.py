@@ -10,7 +10,8 @@ class ProgramEntryGuardTests(unittest.TestCase):
         source = (ROOT / 'default.py').read_text()
 
         guard = source.index('settingsGuard.allow_operation(requested_action)')
-        construction = source.index('backup = XbmcBackup()')
+        construction = source.index(
+            'backup = XbmcBackup(settings_guard=settingsGuard)')
         dispatch = source.index('if(mode == SETTINGS):')
 
         self.assertLess(guard, construction)

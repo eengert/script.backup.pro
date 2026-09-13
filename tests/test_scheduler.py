@@ -203,6 +203,22 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
             for event in backup.events))
         self.assertIn('string:30237', fake_utils.notifications)
 
+    def test_scheduler_passes_shared_guard_to_backup_selection_boundary(self):
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.side_effect = (True, True)
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup) as ctor, \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            scheduler.doScheduledBackup(1)
+
+        ctor.assert_called_once_with(settings_guard=guard)
+
 
 class RefusingDialog:
     """A Dialog that fails the test if scheduler init ever shows UI."""
