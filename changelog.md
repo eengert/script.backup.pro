@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.26
+
+### Added
+
+- Added diagnostic logging for Apple TV backup-selection and stale-settings
+  investigation. Logs identify selected backup sets and non-sensitive settings
+  field names only; this release does not change backup behavior.
+
 ## Version 0.9.25
 
 ### Fixed
