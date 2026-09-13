@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.34
+
+### Fixed
+
+- Excluded volatile SQLite sidecar files (`-shm`, `-wal`, and `-journal`) from
+  backup plans so live database activity cannot invalidate an otherwise
+  complete archive.
+
 ## Version 0.9.33
 
 ### Fixed
