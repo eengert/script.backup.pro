@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.31
+
+### Fixed
+
+- Backup Pro now captures one coherent settings snapshot per backup operation,
+  so Apple TV settings changes during long backup preparation cannot alter the
+  in-flight backup plan.
+
 ## Version 0.9.30
 
 ### Added
