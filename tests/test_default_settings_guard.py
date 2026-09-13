@@ -61,6 +61,20 @@ class ProgramEntryGuardTests(unittest.TestCase):
         self.assertLess(backup_boundary, backup_run)
         self.assertLess(restore_gate, restore_select)
 
+    def test_manual_backup_constructs_a_new_admitted_snapshot_operation(self):
+        source = (ROOT / 'default.py').read_text()
+
+        preplan = source.index("allow_operation('manual_backup_preplan')")
+        admission = source.index('admit_backup_snapshot(', preplan)
+        capture = source.index('BackupOperationSettings.capture', admission)
+        construction = source.index('operation_backup = XbmcBackup(', capture)
+        backup_run = source.index('operation_backup.backup()', construction)
+
+        self.assertLess(preplan, admission)
+        self.assertLess(admission, capture)
+        self.assertLess(capture, construction)
+        self.assertLess(construction, backup_run)
+
 
 if __name__ == '__main__':
     unittest.main()

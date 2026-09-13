@@ -6,6 +6,7 @@ import xbmcgui
 from . import utils as utils
 from resources.lib.croniter import croniter
 from resources.lib.backup import XbmcBackup
+from resources.lib.operation_settings import BackupOperationSettings
 
 class BackupScheduler:
     monitor = None
@@ -122,10 +123,25 @@ class BackupScheduler:
         if guard is not None:
             guard.log_operation_boundary('scheduler_backup')
 
-        if(progress_mode != 2):
+        if guard is not None:
+            operation_settings = guard.admit_backup_snapshot(
+                BackupOperationSettings.capture)
+            if operation_settings is None:
+                utils.log('scheduled backup blocked: Kodi restart required',
+                          xbmc.LOGWARNING)
+                utils.showNotification(utils.getString(30237))
+                return False
+        else:
+            # Non-tvOS has no process guard, but still captures one immutable
+            # configuration for the entire scheduled backup operation.
+            operation_settings = BackupOperationSettings.capture()
+
+        effective_progress_mode = operation_settings.progress_mode
+        if(effective_progress_mode != 2):
             utils.showNotification(utils.getString(30053))
 
-        backup = XbmcBackup(settings_guard=guard)
+        backup = XbmcBackup(
+            settings_guard=guard, operation_settings=operation_settings)
         # background/scheduled execution must never open a recovery dialog
         # or switch skins; only log that interactive recovery is pending.
         backup.checkPendingSkinRestoreBackground()
@@ -144,13 +160,13 @@ class BackupScheduler:
             if guard is not None:
                 guard.log_operation_boundary('scheduler_backup_preplan')
 
-            if(utils.getSettingInt('progress_mode') in [0, 1]):
+            if(effective_progress_mode in [0, 1]):
                 backup.backup(True)
             else:
                 backup.backup(False)
 
             # check if this is a "one-off"
-            if(utils.getSettingInt("schedule_interval") == 0):
+            if(operation_settings.schedule_interval == 0):
                 # disable the scheduler after this run
                 self.enabled = False
                 utils.setSetting('enable_scheduler', 'false')

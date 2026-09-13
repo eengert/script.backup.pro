@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 import json
 import sys
 import unittest
+from dataclasses import dataclass
 from unittest import mock
 
 from tests.test_backup_bridge import install_kodi_stubs
@@ -85,6 +86,12 @@ class FakeObservationHost(FakeHost):
 
 def marker(version='0.9.23', pid=100):
     return {'schema': 1, 'version': version, 'pid': pid}
+
+
+@dataclass(frozen=True)
+class FakeSnapshot:
+    value: str
+    safety_signature: str
 
 
 class SessionMarkerTests(unittest.TestCase):
@@ -356,6 +363,43 @@ class RuntimeDetectionTests(unittest.TestCase):
         self.assertFalse(self.guard.poll(force=True))
         self.assertEqual('safety_check_failed', self.host.properties[
             guard_module.UNSAFE_REASON_PROPERTY])
+
+    def test_snapshot_admission_requires_two_equal_complete_captures(self):
+        snapshot = FakeSnapshot('stable', 'settings-a')
+
+        self.assertEqual(
+            snapshot, self.guard.admit_backup_snapshot(
+                mock.Mock(side_effect=(snapshot, snapshot))))
+        self.assertFalse(self.guard.is_unsafe())
+
+    def test_snapshot_admission_rejects_inconsistent_captures(self):
+        self.assertIsNone(self.guard.admit_backup_snapshot(mock.Mock(
+            side_effect=(FakeSnapshot('one', 'settings-a'),
+                         FakeSnapshot('two', 'settings-a')))))
+        self.assertEqual('snapshot_capture_inconsistent', self.host.properties[
+            guard_module.UNSAFE_REASON_PROPERTY])
+
+    def test_snapshot_admission_rejects_baseline_mismatch_without_values(self):
+        self.assertIsNone(self.guard.admit_backup_snapshot(mock.Mock(
+            return_value=FakeSnapshot('private-value', 'different'))))
+        self.assertEqual('settings_view_changed', self.host.properties[
+            guard_module.UNSAFE_REASON_PROPERTY])
+        messages = '\n'.join(message for message, _level in self.host.logs)
+        self.assertNotIn('private-value', messages)
+
+    def test_snapshot_admission_rejects_ready_state_change_after_capture(self):
+        snapshot = FakeSnapshot('stable', 'settings-a')
+
+        def capture():
+            if not hasattr(capture, 'called'):
+                capture.called = True
+                return snapshot
+            self.host.properties[guard_module.SAFETY_READY_PROPERTY] = (
+                'initializing')
+            return snapshot
+
+        self.assertIsNone(self.guard.admit_backup_snapshot(capture))
+        self.assertFalse(self.guard.is_unsafe())
 
 
 class SignaturePrivacyTests(unittest.TestCase):

@@ -105,13 +105,14 @@ class XbmcBackup:
     restore_point = None
     skip_advanced = False   # if we should check for the existance of advancedsettings in the restore
 
-    def __init__(self, settings_guard=None):
+    def __init__(self, settings_guard=None, operation_settings=None):
         # Program and scheduler pass their shared tvOS guard here. It remains
         # optional so restore/status and non-tvOS callers retain their current
         # behavior.
         self.settings_guard = settings_guard
+        self.operation_settings = operation_settings
         self.xbmc_vfs = XBMCFileSystem(xbmcvfs.translatePath('special://home'))
-        self.ZIP_TEMP_PATH = xbmcvfs.translatePath(utils.getSetting('zip_temp_path'))
+        self.ZIP_TEMP_PATH = xbmcvfs.translatePath(self._setting('zip_temp_path'))
         self.transferSize = 0
         self.transferLeft = 0
         self.backup_plan = None
@@ -139,17 +140,21 @@ class XbmcBackup:
         # setting; remoteConfigured() checks this instead.
         self._remote_raw_path = None
 
-        if(utils.getSetting('remote_selection') == '1'):
-            self._remote_raw_path = utils.getSetting('remote_path_2')
+        if(int(self._setting('remote_selection')) == 1):
+            self._remote_raw_path = self._setting('remote_path_2')
             self.remote_vfs = XBMCFileSystem(self._remote_raw_path)
             # Do not clear remote_path here. Constructing Backup Pro must be
             # read-only with respect to settings: on tvOS a normal settings
             # write can make fresh wrappers expose default values mid-session.
-        elif(utils.getSetting('remote_selection') == '0'):
-            self._remote_raw_path = utils.getSetting("remote_path")
+        elif(int(self._setting('remote_selection')) == 0):
+            self._remote_raw_path = self._setting("remote_path")
             self.remote_vfs = XBMCFileSystem(self._remote_raw_path)
-        elif(utils.getSetting('remote_selection') == '2'):
-            self.remote_vfs = DropboxFileSystem("/")
+        elif(int(self._setting('remote_selection')) == 2):
+            credentials = None
+            if self.operation_settings is not None:
+                credentials = (self.operation_settings.dropbox_key,
+                               self.operation_settings.dropbox_secret)
+            self.remote_vfs = DropboxFileSystem("/", credentials=credentials)
 
         self.remote_base_path = self.remote_vfs.root_path
 
@@ -242,16 +247,16 @@ class XbmcBackup:
                 self._active_artifact = self.remote_vfs.root_path
                 self._active_artifact_compressed = False
 
-            # VFS setup can take long enough for the separate tvOS service to
-            # discover an unsafe/default settings view after Program's earlier
-            # gate. This outer check protects VFS setup; _collectBackupFiles()
-            # performs the final check at its actual selection boundary.
+            # Legacy callers still need a live guard here. An admitted
+            # operation snapshot never refreshes settings after admission;
+            # its check only observes the shared unsafe/ready state.
             if not self._allowBackupSelection('backup_selection_boundary'):
                 self._closeVFS()
                 return False
 
             utils.log(utils.getString(30051))
-            utils.log('File Selection Type: ' + str(utils.getSetting('backup_selection_type')))
+            utils.log('File Selection Type: ' + str(
+                self._setting_int('backup_selection_type')))
             allFiles = self._collectBackupFiles()
             if allFiles is None:
                 return False
@@ -276,12 +281,17 @@ class XbmcBackup:
 
             orig_base_path = self.remote_vfs.root_path
             backup_success = True
-            compressing = utils.getSettingBool("compress_backups")
+            compressing = self._setting_bool("compress_backups")
             remote_artifact = None if compressing else orig_base_path
 
             # backup all the files
             self.transferLeft = self.transferSize
             for fileGroup in allFiles:
+                if self._operation_revoked():
+                    utils.log('Backup stopped: Kodi restart required',
+                              xbmc.LOGWARNING)
+                    backup_success = False
+                    break
                 self.xbmc_vfs.set_root(xbmcvfs.translatePath(fileGroup['source']))
                 self.remote_vfs.set_root(fileGroup['dest'] + fileGroup['name'])
                 filesCopied = self._copyFiles(fileGroup['files'], self.xbmc_vfs, self.remote_vfs)
@@ -295,7 +305,9 @@ class XbmcBackup:
             self.remote_vfs.set_root(orig_base_path)
 
             if(compressing):
-                fileManager = FileManager(self.xbmc_vfs)
+                fileManager = FileManager(
+                    self.xbmc_vfs,
+                    verbose=self._setting_bool('verbose_logging'))
 
                 # from here on (finalizing the ZIP and copying it to the
                 # real destination) there is no reliable, cheap way to
@@ -334,7 +346,7 @@ class XbmcBackup:
                 self.remote_vfs = self.saved_remote_vfs
 
                 # update the amount to transfer
-                if backup_success:
+                if backup_success and not self._operation_revoked():
                     remote_zip = (self.remote_vfs.root_path +
                                   os.path.basename(zip_name))
                     if self.remote_vfs.exists(remote_zip):
@@ -345,7 +357,7 @@ class XbmcBackup:
                         remote_artifact = remote_zip
                         self._active_artifact = remote_zip
                         self._active_artifact_compressed = True
-                if backup_success:
+                if backup_success and not self._operation_revoked():
                     self.transferSize = fileManager.fileSize()
                     self.transferLeft = self.transferSize
                     fileCopied = self._copyFiles(
@@ -950,7 +962,7 @@ class XbmcBackup:
         remote_configured = self.remoteConfigured()
         remote = {'configured': remote_configured}
         if remote_configured:
-            if utils.getSetting('remote_selection') == '2':
+            if int(self._setting('remote_selection')) == 2:
                 remote['label'] = utils.getString(30027)
             else:
                 remote['label'] = self.remote_base_path
@@ -987,7 +999,7 @@ class XbmcBackup:
         # append backup folder name
         progressBarTitle = utils.getString(30010) + " - "
         if(mode == self.Backup and self.remote_vfs.root_path != ''):
-            if(utils.getSettingBool("compress_backups")):
+            if(self._setting_bool("compress_backups")):
                 # delete old temp file
                 zip_path = os.path.join(self.ZIP_TEMP_PATH, 'xbmc_backup_temp.zip')
                 if(self.xbmc_vfs.exists(zip_path)):
@@ -1000,7 +1012,7 @@ class XbmcBackup:
                 self.saved_remote_vfs = self.remote_vfs
                 self.remote_vfs = ZipFileSystem(zip_path, "w")
 
-            self.remote_vfs.set_root(self.remote_vfs.root_path + time.strftime("%Y%m%d%H%M%S") + utils.getSetting('backup_suffix').strip() + "/")
+            self.remote_vfs.set_root(self.remote_vfs.root_path + time.strftime("%Y%m%d%H%M%S") + self._setting('backup_suffix').strip() + "/")
             progressBarTitle = progressBarTitle + utils.getString(30023) + ": " + utils.getString(30016)
         elif(mode == self.Restore and self.restore_point is not None and self.remote_vfs.root_path != ''):
             if(self.restore_point.split('.')[-1] != 'zip'):
@@ -1013,10 +1025,11 @@ class XbmcBackup:
 
         utils.log(utils.getString(30047) + ": " + self.xbmc_vfs.root_path)
         utils.log(utils.getString(30048) + ": " + self.remote_vfs.root_path)
-        utils.log(utils.getString(30152) + ": " + utils.getSetting('zip_temp_path'))
+        utils.log(utils.getString(30152) + ": " + self._setting('zip_temp_path'))
 
         # setup the progress bar
-        self.progressBar = BackupProgressBar(progressOverride)
+        self.progressBar = BackupProgressBar(
+            progressOverride, progress_mode=self._setting_int('progress_mode'))
         initial_message = utils.getString(30049) + "......"
         if mode == self.Restore:
             initial_message = restore_preparation_message(utils.getString)
@@ -1066,11 +1079,16 @@ class XbmcBackup:
             dest.mkdir(dest.root_path)
 
         for aFile in fileList:
+            if self._operation_revoked():
+                utils.log('Backup stopped: Kodi restart required',
+                          xbmc.LOGWARNING)
+                result = False
+                break
             if(self.progressBar.checkCancel()):
                 result = False
                 break
             else:
-                if(utils.getSettingBool('verbose_logging')):
+                if(self._setting_bool('verbose_logging')):
                     utils.log('Writing file: ' + aFile['file'])
 
                 if(aFile['is_dir']):
@@ -1152,7 +1170,9 @@ class XbmcBackup:
 
     def _addBackupDir(self, folder_name, root_path, dirList):
         utils.log('Backup set: ' + folder_name)
-        fileManager = FileManager(self.xbmc_vfs)
+        fileManager = FileManager(
+            self.xbmc_vfs,
+            verbose=self._setting_bool('verbose_logging'))
 
         self.xbmc_vfs.set_root(xbmcvfs.translatePath(root_path))
         for aDir in dirList:
@@ -1183,34 +1203,35 @@ class XbmcBackup:
         self._skin_managed_exclusions = []
         self._automatic_exclusion_rules = None
         skin_group = None
-        if utils.getSettingBool('backup_skin_config'):
+        if self._setting_bool('backup_skin_config'):
             skin_group = self._captureSkinConfigGroup()
 
-        # AF3 capture can take long enough for the separate tvOS service to
-        # detect an unsafe/default settings view. Recheck at the actual
-        # simple-selection consumption boundary, after that capture and before
-        # reading backup_selection_type or any simple backup_<set> selector.
+        # Legacy callers recheck immediately before selection. An admitted
+        # snapshot has already materialized every selector, so this only
+        # observes revocation without asking Kodi for another value.
         if not self._allowBackupSelection(
                 'backup_selection_consumption_boundary'):
             self._closeVFS()
             return None
 
-        selection_type = utils.getSettingInt('backup_selection_type')
+        selection_type = self._setting_int('backup_selection_type')
         if(selection_type == 0):
             selectedDirs = self._readBackupConfig(
                 utils.addon_dir() + "/resources/data/default_files.json")
-            selected_set_ids = []
-            for name in self.simple_directory_list:
-                if(utils.getSettingBool('backup_' + name)):
-                    selected_set_ids.append(name)
-                    selected = selectedDirs[name]
-                    allFiles.append(self._addBackupDir(
-                        name, selected['root'], selected['dirs']))
+            selected_set_ids = [
+                name for name in self.simple_directory_list
+                if self._setting_bool('backup_' + name)]
+            # Materialize the full selection before walking even one tree.
+            # A tvOS operation snapshot makes this independent of any later
+            # add-on-settings cache transition.
             utils.log('Backup simple selection: ' +
                       ','.join(selected_set_ids), xbmc.LOGWARNING)
+            for name in selected_set_ids:
+                selected = selectedDirs[name]
+                allFiles.append(self._addBackupDir(
+                    name, selected['root'], selected['dirs']))
         else:
-            selectedDirs = self._readBackupConfig(
-                utils.data_dir() + "/custom_paths.json")
+            selectedDirs = self._advanced_paths()
             for name in sorted(selectedDirs):
                 selected = selectedDirs[name]
                 allFiles.append(self._addBackupDir(
@@ -1251,6 +1272,13 @@ class XbmcBackup:
         guard = getattr(self, 'settings_guard', None)
         if guard is None:
             return True
+        if getattr(self, 'operation_settings', None) is not None:
+            if not guard.operation_revoked():
+                return True
+            utils.log('backup selection blocked: Kodi restart required',
+                      xbmc.LOGWARNING)
+            utils.showNotification(utils.getString(30237))
+            return False
         if not guard.allow_operation(action):
             utils.log('backup selection blocked: Kodi restart required',
                       xbmc.LOGWARNING)
@@ -1382,7 +1410,7 @@ class XbmcBackup:
             'adapter': 'script.backup.pro.settings-safety',
             'reason': 'Device-local tvOS settings-safety session marker',
         })
-        if not utils.getSettingBool('exclude_tmdbh_image_cache'):
+        if not self._setting_bool('exclude_tmdbh_image_cache'):
             return self._automatic_exclusion_rules
 
         try:
@@ -1416,7 +1444,7 @@ class XbmcBackup:
         self.progressBar.updateProgress(int((float(self.transferSize - self.transferLeft) / float(self.transferSize)) * 100), message)
 
     def _rotateBackups(self):
-        total_backups = utils.getSettingInt('backup_rotation')
+        total_backups = self._setting_int('backup_rotation')
 
         if(total_backups > 0):
             # get a list of valid backup folders
@@ -1671,6 +1699,43 @@ class XbmcBackup:
 
         return result
 
+    def _setting(self, name):
+        operation_settings = getattr(self, 'operation_settings', None)
+        if operation_settings is not None:
+            return getattr(operation_settings, name)
+        return utils.getSetting(name)
+
+    def _setting_bool(self, name):
+        operation_settings = getattr(self, 'operation_settings', None)
+        if operation_settings is not None:
+            if name.startswith('backup_') and name != 'backup_selection_type':
+                if name == 'backup_skin_config':
+                    return operation_settings.backup_skin_config
+                return operation_settings.selected(name[7:])
+            return bool(getattr(operation_settings, name))
+        return utils.getSettingBool(name)
+
+    def _setting_int(self, name):
+        operation_settings = getattr(self, 'operation_settings', None)
+        if operation_settings is not None:
+            return int(getattr(operation_settings, name))
+        return utils.getSettingInt(name)
+
+    def _advanced_paths(self):
+        operation_settings = getattr(self, 'operation_settings', None)
+        if operation_settings is None:
+            return self._readBackupConfig(utils.data_dir() +
+                                          "/custom_paths.json")
+        if not operation_settings.advanced_paths_json:
+            return {}
+        return json.loads(operation_settings.advanced_paths_json)
+
+    def _operation_revoked(self):
+        guard = getattr(self, 'settings_guard', None)
+        return (getattr(self, 'operation_settings', None) is not None
+                and guard is not None
+                and guard.operation_revoked())
+
     def _hashFile(self, path, cancellable=False):
         with xbmcvfs.File(xbmcvfs.translatePath(path), 'r') as source:
             check_cancel = (self.progressBar.checkCancel
@@ -1743,14 +1808,15 @@ class XbmcBackup:
 
 
 class FileManager(FilePlanner):
-    def __init__(self, vfs):
+    def __init__(self, vfs, verbose=None):
         FilePlanner.__init__(
             self,
             vfs,
             translate=xbmcvfs.translatePath,
             validate=xbmcvfs.validatePath,
             logger=utils.log,
-            verbose=utils.getSettingBool('verbose_logging'),
+            verbose=(utils.getSettingBool('verbose_logging')
+                     if verbose is None else verbose),
         )
 
     def fileSize(self):

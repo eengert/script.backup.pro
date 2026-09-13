@@ -98,6 +98,12 @@ class FakeUtils:
         pass
 
 
+class FakeOperationSettings:
+    def __init__(self, progress_mode=1, schedule_interval=1):
+        self.progress_mode = progress_mode
+        self.schedule_interval = schedule_interval
+
+
 class SchedulerBackgroundDeferralTests(unittest.TestCase):
     def _run(self, pending, remote_configured, progress_mode=1,
               setting_ints=None):
@@ -108,6 +114,9 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
 
         with mock.patch.object(
                 scheduler_module, 'XbmcBackup', return_value=backup), \
+                mock.patch.object(
+                scheduler_module.BackupOperationSettings, 'capture',
+                return_value=FakeOperationSettings(progress_mode)), \
                 mock.patch.object(scheduler_module, 'utils', fake_utils):
             scheduler.doScheduledBackup(progress_mode)
 
@@ -165,6 +174,7 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
         guard = mock.Mock()
         guard.allow_operation.return_value = False
+        guard.admit_backup_snapshot.return_value = None
         scheduler = object.__new__(scheduler_module.BackupScheduler)
         scheduler.enabled = True
         scheduler.settings_guard = guard
@@ -184,6 +194,7 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
         guard = mock.Mock()
         guard.allow_operation.side_effect = (True, False)
+        guard.admit_backup_snapshot.return_value = FakeOperationSettings()
         scheduler = object.__new__(scheduler_module.BackupScheduler)
         scheduler.enabled = True
         scheduler.settings_guard = guard
@@ -208,6 +219,8 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
         guard = mock.Mock()
         guard.allow_operation.side_effect = (True, True)
+        snapshot = FakeOperationSettings()
+        guard.admit_backup_snapshot.return_value = snapshot
         scheduler = object.__new__(scheduler_module.BackupScheduler)
         scheduler.enabled = True
         scheduler.settings_guard = guard
@@ -217,7 +230,8 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
                 mock.patch.object(scheduler_module, 'utils', fake_utils):
             scheduler.doScheduledBackup(1)
 
-        ctor.assert_called_once_with(settings_guard=guard)
+        ctor.assert_called_once_with(
+            settings_guard=guard, operation_settings=snapshot)
 
 
 class RefusingDialog:

@@ -2,6 +2,7 @@ import xbmcgui
 import xbmcvfs
 import resources.lib.utils as utils
 from resources.lib.backup import XbmcBackup
+from resources.lib.operation_settings import BackupOperationSettings
 from resources.lib.tvos_settings_guard import TvOSSettingsGuard
 from resources.lib.authorizers import DropboxAuthorizer
 from resources.lib.advanced_editor import AdvancedBackupEditor
@@ -215,8 +216,11 @@ if(mode != -1):
                         backup.restore(selectedSets=params['sets'].split('|'))
                     else:
                         backup.restore()
-        elif(mode == BACKUP and backup.remoteConfigured()):
-            # mode was BACKUP
+        elif(mode == BACKUP):
+            # The initial object is intentionally only for Program menu,
+            # recovery, and restore work. Build a separate snapshot-backed
+            # object for the actual backup operation so no dynamic Backup Pro
+            # setting reads occur after admission.
             # The user can spend time in the confirmation dialog after the
             # entry gate. Recheck immediately before planner settings reads.
             if not settingsGuard.allow_operation('manual_backup_preplan'):
@@ -224,7 +228,21 @@ if(mode != -1):
                                     utils.getString(30237))
             else:
                 settingsGuard.log_operation_boundary('manual_backup_preplan')
-                backup.backup()
+                operation_settings = settingsGuard.admit_backup_snapshot(
+                    BackupOperationSettings.capture)
+                if operation_settings is None:
+                    xbmcgui.Dialog().ok(utils.getString(30010),
+                                        utils.getString(30237))
+                else:
+                    operation_backup = XbmcBackup(
+                        settings_guard=settingsGuard,
+                        operation_settings=operation_settings)
+                    if operation_backup.remoteConfigured():
+                        operation_backup.backup()
+                    else:
+                        xbmcgui.Dialog().ok(
+                            utils.getString(30010), utils.getString(30045))
+                        utils.openSettings()
         else:
             # can't go any further
             xbmcgui.Dialog().ok(utils.getString(30010), utils.getString(30045))

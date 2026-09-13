@@ -94,19 +94,34 @@ def _digest(value):
 
 def normalized_settings_signature(addon):
     """Return an opaque digest of non-sensitive Backup Pro settings."""
+    return normalized_settings_signature_from_values({
+        setting_id: bool(addon.getSettingBool(setting_id))
+        for setting_id in _BOOL_SETTINGS
+    }, {
+        setting_id: int(addon.getSettingInt(setting_id))
+        for setting_id in _INT_SETTINGS
+    }, {
+        setting_id: addon.getSetting(setting_id).strip()
+        for setting_id in _STRING_SETTINGS
+    }, {
+        setting_id: bool(addon.getSetting(setting_id).strip())
+        for setting_id in _PRESENCE_SETTINGS
+    })
+
+
+def normalized_settings_signature_from_values(bool_values, int_values,
+                                              string_values, presence_values):
+    """Digest approved public state without retaining private values."""
     values = []
     for setting_id in _BOOL_SETTINGS:
-        values.append(('bool', setting_id,
-                       bool(addon.getSettingBool(setting_id))))
+        values.append(('bool', setting_id, bool(bool_values[setting_id])))
     for setting_id in _INT_SETTINGS:
-        values.append(('int', setting_id,
-                       int(addon.getSettingInt(setting_id))))
+        values.append(('int', setting_id, int(int_values[setting_id])))
     for setting_id in _STRING_SETTINGS:
-        values.append(('string', setting_id,
-                       addon.getSetting(setting_id).strip()))
+        values.append(('string', setting_id, string_values[setting_id]))
     for setting_id in _PRESENCE_SETTINGS:
         values.append(('configured', setting_id,
-                       bool(addon.getSetting(setting_id).strip())))
+                       bool(presence_values[setting_id])))
     return _digest(values)
 
 
@@ -575,6 +590,44 @@ class TvOSSettingsGuard:
             allowed = self.poll(force=True)
         self._log_operation_decision(action, allowed, unsafe_before)
         return allowed
+
+    def operation_revoked(self):
+        """Read only shared state; never refresh operation settings."""
+        return (self._active and (
+            self.is_unsafe() or self.host.property_get(
+                SAFETY_READY_PROPERTY) == 'initializing'))
+
+    def admit_backup_snapshot(self, capture):
+        """Admit one complete immutable backup configuration or return None.
+
+        The capture callable must make a fresh complete settings copy. Values
+        remain in its return object only; this guard stores no private input.
+        """
+        if not self.allow_operation('backup_snapshot_admission'):
+            return None
+        try:
+            first = capture()
+            second = capture()
+        except Exception as exc:
+            self.host.log('backup snapshot capture failed: %s' %
+                          type(exc).__name__)
+            self._mark_unsafe('snapshot_capture_failed')
+            return None
+        if first != second:
+            self.host.log('backup snapshot capture was inconsistent')
+            self._mark_unsafe('snapshot_capture_inconsistent')
+            return None
+        if self._active and first.safety_signature != self.host.property_get(
+                SETTINGS_SIGNATURE_PROPERTY):
+            self.host.log('backup snapshot did not match session baseline')
+            self._mark_unsafe('settings_view_changed')
+            return None
+        if self.operation_revoked():
+            self._last_block_reason = 'shared_state_changed'
+            self._log_operation_decision(
+                'backup_snapshot_admission', False, True)
+            return None
+        return first
 
     def begin_settings_edit(self):
         if self._active:

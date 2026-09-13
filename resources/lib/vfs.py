@@ -178,10 +178,11 @@ class DropboxFileSystem(Vfs):
     APP_KEY = ''
     APP_SECRET = ''
 
-    def __init__(self, rootString):
+    def __init__(self, rootString, credentials=None):
         self.set_root(rootString)
 
-        authorizer = DropboxAuthorizer()
+        credentials = credentials or (None, None)
+        authorizer = DropboxAuthorizer(*credentials)
 
         if(authorizer.isAuthorized()):
             self.client = authorizer.getClient()
