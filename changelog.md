@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.25
+
+### Fixed
+
+- Fixed an Apple TV issue where ordinary Backup Pro operation could mutate a
+  destination setting, causing false stale-settings restart prompts and
+  potentially making deselected sets such as Kodi Databases and
+  Thumbnails/Fanart appear in a backup.
+
 ## Version 0.9.24
 
 ### Fixed
