@@ -526,6 +526,141 @@ class BackupBridgeTests(unittest.TestCase):
             backup_module.utils.getString = original_get_string
             backup_module.utils.log = original_log
 
+    def test_inner_selection_gate_blocks_race_after_af3_capture(self):
+        """Example Room: service may become unsafe during AF3 capture."""
+        class Guard:
+            def __init__(self):
+                self.unsafe = False
+                self.actions = []
+
+            def allow_operation(self, action):
+                self.actions.append(action)
+                return not self.unsafe
+
+            def log_operation_boundary(self, _action):
+                pass
+
+        guard = Guard()
+        instance = object.__new__(XbmcBackup)
+        instance.settings_guard = guard
+        instance._vfs_closed = False
+        instance._closeVFS = lambda: setattr(instance, '_vfs_closed', True)
+        selection_reads = []
+        logs = []
+        original_bool = backup_module.utils.getSettingBool
+        original_int = backup_module.utils.getSettingInt
+        original_log = backup_module.utils.log
+        original_notify = backup_module.utils.showNotification
+        original_string = backup_module.utils.getString
+        try:
+            backup_module.utils.getSettingBool = lambda name: (
+                selection_reads.append(name) or name == 'backup_skin_config')
+            backup_module.utils.getSettingInt = lambda name: self.fail(
+                'selection read after unsafe state: %s' % name)
+            backup_module.utils.log = lambda *args: logs.append(args)
+            backup_module.utils.showNotification = lambda _message: None
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+
+            def capture():
+                guard.unsafe = True
+                return {'name': 'skin_config'}
+
+            instance._captureSkinConfigGroup = capture
+
+            self.assertTrue(instance._allowBackupSelection(
+                'backup_selection_boundary'))
+            self.assertIsNone(instance._collectBackupFiles())
+            self.assertEqual(['backup_skin_config'], selection_reads)
+            self.assertEqual([
+                'backup_selection_boundary',
+                'backup_selection_consumption_boundary',
+            ], guard.actions)
+            self.assertTrue(instance._vfs_closed)
+            self.assertFalse(hasattr(instance, 'backup_plan'))
+            self.assertFalse(any(
+                message.startswith('Backup simple selection:')
+                for message, _level in logs))
+            self.assertFalse(any(
+                message.startswith('Backup planned set IDs:')
+                for message, _level in logs))
+        finally:
+            backup_module.utils.getSettingBool = original_bool
+            backup_module.utils.getSettingInt = original_int
+            backup_module.utils.log = original_log
+            backup_module.utils.showNotification = original_notify
+            backup_module.utils.getString = original_string
+
+    def test_inner_selection_gate_allows_safe_selection_after_af3_capture(self):
+        guard = type('Guard', (), {
+            'allow_operation': lambda _self, _action: True,
+            'log_operation_boundary': lambda *_args: None,
+        })()
+        instance = object.__new__(XbmcBackup)
+        instance.settings_guard = guard
+        instance._automatic_exclusion_rules = None
+        instance._skin_managed_exclusions = []
+        instance._automaticExclusions = lambda: []
+        instance._readBackupConfig = lambda _path: {
+            name: {'root': '/profile/' + name, 'dirs': []}
+            for name in XbmcBackup.simple_directory_list
+        }
+        instance._addBackupDir = lambda name, root, _dirs: {
+            'name': name, 'source': root, 'dest': '/backup/', 'files': [],
+            'summary': {'included_files': 0, 'included_kib': 0.0,
+                        'excluded_files': 0, 'excluded_kib': 0.0,
+                        'exclusions': []},
+        }
+        instance._hashFile = lambda *_args, **_kwargs: None
+        instance._captureSkinConfigGroup = lambda: {
+            'name': 'skin_config', 'source': '/profile/skin/',
+            'dest': '/backup/', 'files': [],
+            'summary': {'included_files': 0, 'included_kib': 0.0,
+                        'excluded_files': 0, 'excluded_kib': 0.0,
+                        'exclusions': []},
+        }
+        original_bool = backup_module.utils.getSettingBool
+        original_int = backup_module.utils.getSettingInt
+        original_log = backup_module.utils.log
+        try:
+            backup_module.utils.getSettingBool = lambda name: name in (
+                'backup_addons', 'backup_skin_config')
+            backup_module.utils.getSettingInt = lambda _name: 0
+            backup_module.utils.log = lambda *_args: None
+
+            groups = instance._collectBackupFiles()
+            self.assertEqual(['addons', 'skin_config'],
+                             [group['name'] for group in groups])
+        finally:
+            backup_module.utils.getSettingBool = original_bool
+            backup_module.utils.getSettingInt = original_int
+            backup_module.utils.log = original_log
+
+    def test_inner_selection_gate_blocks_initializing_state(self):
+        guard = type('Guard', (), {
+            'allow_operation': lambda _self, _action: False,
+            'log_operation_boundary': lambda *_args: None,
+        })()
+        instance = object.__new__(XbmcBackup)
+        instance.settings_guard = guard
+        instance._vfs_closed = False
+        instance._closeVFS = lambda: setattr(instance, '_vfs_closed', True)
+        original_bool = backup_module.utils.getSettingBool
+        original_notify = backup_module.utils.showNotification
+        original_string = backup_module.utils.getString
+        try:
+            backup_module.utils.getSettingBool = lambda name: (
+                name == 'backup_skin_config')
+            backup_module.utils.showNotification = lambda _message: None
+            backup_module.utils.getString = lambda value: 'string:%s' % value
+            instance._captureSkinConfigGroup = lambda: {'name': 'skin_config'}
+
+            self.assertIsNone(instance._collectBackupFiles())
+            self.assertTrue(instance._vfs_closed)
+        finally:
+            backup_module.utils.getSettingBool = original_bool
+            backup_module.utils.showNotification = original_notify
+            backup_module.utils.getString = original_string
+
     def test_simple_selection_honors_database_and_thumbnail_settings(self):
         """Regression for Example Room: unchecked sets must never be planned."""
         original_bool = backup_module.utils.getSettingBool

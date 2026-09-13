@@ -244,22 +244,17 @@ class XbmcBackup:
 
             # VFS setup can take long enough for the separate tvOS service to
             # discover an unsafe/default settings view after Program's earlier
-            # gate. This is the last safe point before any backup_* selection
-            # value is consumed by _collectBackupFiles().
-            guard = getattr(self, 'settings_guard', None)
-            if (guard is not None
-                    and not guard.allow_operation('backup_selection_boundary')):
-                utils.log('backup selection blocked: Kodi restart required',
-                          xbmc.LOGWARNING)
-                utils.showNotification(utils.getString(30237))
+            # gate. This outer check protects VFS setup; _collectBackupFiles()
+            # performs the final check at its actual selection boundary.
+            if not self._allowBackupSelection('backup_selection_boundary'):
                 self._closeVFS()
                 return False
-            if guard is not None:
-                guard.log_operation_boundary('backup_selection_boundary')
 
             utils.log(utils.getString(30051))
             utils.log('File Selection Type: ' + str(utils.getSetting('backup_selection_type')))
             allFiles = self._collectBackupFiles()
+            if allFiles is None:
+                return False
 
             try:
                 writeCheck = self._createValidationFile(allFiles)
@@ -1191,6 +1186,15 @@ class XbmcBackup:
         if utils.getSettingBool('backup_skin_config'):
             skin_group = self._captureSkinConfigGroup()
 
+        # AF3 capture can take long enough for the separate tvOS service to
+        # detect an unsafe/default settings view. Recheck at the actual
+        # simple-selection consumption boundary, after that capture and before
+        # reading backup_selection_type or any simple backup_<set> selector.
+        if not self._allowBackupSelection(
+                'backup_selection_consumption_boundary'):
+            self._closeVFS()
+            return None
+
         selection_type = utils.getSettingInt('backup_selection_type')
         if(selection_type == 0):
             selectedDirs = self._readBackupConfig(
@@ -1241,6 +1245,19 @@ class XbmcBackup:
         utils.log('Backup plan: %s' % json.dumps(
             self.backup_plan, sort_keys=True))
         return allFiles
+
+    def _allowBackupSelection(self, action):
+        """Fail closed when tvOS settings become unsafe before selection."""
+        guard = getattr(self, 'settings_guard', None)
+        if guard is None:
+            return True
+        if not guard.allow_operation(action):
+            utils.log('backup selection blocked: Kodi restart required',
+                      xbmc.LOGWARNING)
+            utils.showNotification(utils.getString(30237))
+            return False
+        guard.log_operation_boundary(action)
+        return True
 
     def _skinRpc(self, method, **params):
         request = json.dumps({
