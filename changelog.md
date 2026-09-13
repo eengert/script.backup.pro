@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.30
+
+### Added
+
+- Added a final Apple TV settings-safety check after AF3 capture so stale
+  settings cannot reach backup file selection.
+
 ## Version 0.9.29
 
 ### Added
