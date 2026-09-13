@@ -69,6 +69,20 @@ class FakeHost:
         return self.now
 
 
+class FakeObservationHost(FakeHost):
+    """Host double exposing the safe, field-name-only diagnostic state."""
+    def __init__(self, *args, **kwargs):
+        super(FakeObservationHost, self).__init__(*args, **kwargs)
+        self.diagnostic_value = (
+            ('backup_database', False),
+            ('backup_thumbnails', False),
+            ('remote_path_configured', True),
+        )
+
+    def settings_observation(self):
+        return self.settings_value, self.diagnostic_value
+
+
 def marker(version='0.9.23', pid=100):
     return {'schema': 1, 'version': version, 'pid': pid}
 
@@ -177,6 +191,25 @@ class RuntimeDetectionTests(unittest.TestCase):
         self.assertFalse(self.guard.poll(force=True))
         self.assertEqual('settings_view_changed', self.host.properties[
             guard_module.UNSAFE_REASON_PROPERTY])
+
+    def test_stale_view_logs_changed_non_sensitive_field_names(self):
+        host = FakeObservationHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+        self.assertTrue(guard.initialize())
+        host.settings_value = 'stale-default-view'
+        host.diagnostic_value = (
+            ('backup_database', True),
+            ('backup_thumbnails', True),
+            ('remote_path_configured', True),
+        )
+
+        self.assertFalse(guard.poll(force=True))
+        messages = [message for message, _level in host.logs]
+        self.assertIn(
+            'settings signature fields changed: backup_database,backup_thumbnails',
+            messages)
+        self.assertNotIn('smb://private/path', '\n'.join(messages))
+        self.assertNotIn('secret', '\n'.join(messages))
 
     def test_legitimate_settings_change_rebaselines(self):
         self.host.settings_value = 'settings-b'

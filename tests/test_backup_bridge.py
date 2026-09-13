@@ -481,6 +481,55 @@ class BackupBridgeTests(unittest.TestCase):
             backup_module.utils.getSettingInt = original_int
             backup_module.utils.log = original_log
 
+    def test_simple_selection_logs_actual_selected_set_ids(self):
+        original_bool = backup_module.utils.getSettingBool
+        original_int = backup_module.utils.getSettingInt
+        original_log = backup_module.utils.log
+        selected_dirs = {
+            name: {'root': '/profile/' + name, 'dirs': []}
+            for name in XbmcBackup.simple_directory_list
+        }
+        logs = []
+        try:
+            backup_module.utils.getSettingInt = lambda _name: 0
+            backup_module.utils.getSettingBool = lambda name: name in (
+                'backup_addons', 'backup_skin_config')
+            backup_module.utils.log = lambda *args: logs.append(args)
+            instance = object.__new__(XbmcBackup)
+            instance._automatic_exclusion_rules = None
+            instance._skin_managed_exclusions = []
+            instance._automaticExclusions = lambda: []
+            instance._readBackupConfig = lambda _path: selected_dirs
+            instance._captureSkinConfigGroup = lambda: {
+                'name': 'skin_config', 'source': '/profile/skin/',
+                'dest': '/backup/', 'files': [], 'summary': {
+                    'included_files': 0, 'included_kib': 0.0,
+                    'excluded_files': 0, 'excluded_kib': 0.0,
+                    'exclusions': [],
+                },
+            }
+            instance._addBackupDir = lambda name, root, _dirs: {
+                'name': name, 'source': root, 'dest': '/backup/',
+                'files': [], 'summary': {
+                    'included_files': 0, 'included_kib': 0.0,
+                    'excluded_files': 0, 'excluded_kib': 0.0,
+                    'exclusions': [],
+                },
+            }
+            instance._hashFile = lambda *_args, **_kwargs: None
+
+            groups = instance._collectBackupFiles()
+            self.assertEqual(['addons', 'skin_config'],
+                             [group['name'] for group in groups])
+            self.assertIn(('Backup simple selection: addons',
+                           backup_module.xbmc.LOGWARNING), logs)
+            self.assertIn(('Backup planned set IDs: addons,skin_config',
+                           backup_module.xbmc.LOGWARNING), logs)
+        finally:
+            backup_module.utils.getSettingBool = original_bool
+            backup_module.utils.getSettingInt = original_int
+            backup_module.utils.log = original_log
+
     def test_backup_collection_collapses_and_logs_identical_case_alias(self):
         original_bool = backup_module.utils.getSettingBool
         original_int = backup_module.utils.getSettingInt

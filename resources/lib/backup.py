@@ -1172,14 +1172,19 @@ class XbmcBackup:
         if utils.getSettingBool('backup_skin_config'):
             skin_group = self._captureSkinConfigGroup()
 
-        if(utils.getSettingInt('backup_selection_type') == 0):
+        selection_type = utils.getSettingInt('backup_selection_type')
+        if(selection_type == 0):
             selectedDirs = self._readBackupConfig(
                 utils.addon_dir() + "/resources/data/default_files.json")
+            selected_set_ids = []
             for name in self.simple_directory_list:
                 if(utils.getSettingBool('backup_' + name)):
+                    selected_set_ids.append(name)
                     selected = selectedDirs[name]
                     allFiles.append(self._addBackupDir(
                         name, selected['root'], selected['dirs']))
+            utils.log('Backup simple selection: ' +
+                      ','.join(selected_set_ids), xbmc.LOGWARNING)
         else:
             selectedDirs = self._readBackupConfig(
                 utils.data_dir() + "/custom_paths.json")
@@ -1190,6 +1195,9 @@ class XbmcBackup:
 
         if skin_group is not None:
             allFiles.append(skin_group)
+
+        utils.log('Backup planned set IDs: ' + ','.join(
+            group['name'] for group in allFiles), xbmc.LOGWARNING)
 
         allFiles, alias_exclusions = collapse_identical_case_collisions(
             allFiles,

@@ -25,6 +25,7 @@ UNSAFE_REASON_PROPERTY = ADDON_ID + '.settings_unsafe_reason'
 SETTINGS_SIGNATURE_PROPERTY = ADDON_ID + '.settings_signature'
 INVENTORY_SIGNATURE_PROPERTY = ADDON_ID + '.addon_inventory_signature'
 SETTINGS_EDIT_PROPERTY = ADDON_ID + '.settings_edit_active'
+SETTINGS_DIAGNOSTIC_PROPERTY = ADDON_ID + '.settings_diagnostic_state'
 
 # Values included here are operational choices, never credentials or paths.
 _BOOL_SETTINGS = (
@@ -95,6 +96,23 @@ def normalized_settings_signature(addon):
         values.append(('configured', setting_id,
                        bool(addon.getSetting(setting_id).strip())))
     return _digest(values)
+
+
+def diagnostic_settings_state(addon):
+    """Return only non-sensitive setting fields suitable for mismatch logs.
+
+    This deliberately excludes paths, credentials, and free-form strings. It
+    exists solely to identify a stale/default settings view by field name.
+    """
+    values = []
+    for setting_id in _BOOL_SETTINGS:
+        values.append((setting_id, bool(addon.getSettingBool(setting_id))))
+    for setting_id in _INT_SETTINGS:
+        values.append((setting_id, int(addon.getSettingInt(setting_id))))
+    for setting_id in _PRESENCE_SETTINGS:
+        values.append((setting_id + '_configured',
+                       bool(addon.getSetting(setting_id).strip())))
+    return tuple(values)
 
 
 def normalized_inventory_signature(response_text):
@@ -221,6 +239,11 @@ class KodiSettingsSafetyHost:
     def settings_signature(self):
         return normalized_settings_signature(self.addon())
 
+    def settings_observation(self):
+        addon = self.addon()
+        return (normalized_settings_signature(addon),
+                diagnostic_settings_state(addon))
+
     def inventory_signature(self):
         request = {
             'jsonrpc': '2.0',
@@ -265,7 +288,7 @@ class TvOSSettingsGuard:
         for name in (
                 UNSAFE_PROPERTY, UNSAFE_REASON_PROPERTY,
                 SETTINGS_SIGNATURE_PROPERTY, INVENTORY_SIGNATURE_PROPERTY,
-                SETTINGS_EDIT_PROPERTY):
+                SETTINGS_EDIT_PROPERTY, SETTINGS_DIAGNOSTIC_PROPERTY):
             self.host.property_clear(name)
 
     def _write_current_marker(self):
@@ -308,14 +331,43 @@ class TvOSSettingsGuard:
 
     def _ensure_baselines(self):
         if not self.host.property_get(SETTINGS_SIGNATURE_PROPERTY):
-            self.host.property_set(
-                SETTINGS_SIGNATURE_PROPERTY,
-                self.host.settings_signature())
+            signature, diagnostic = self._settings_observation()
+            self.host.property_set(SETTINGS_SIGNATURE_PROPERTY, signature)
+            self._set_diagnostic_baseline(diagnostic)
         if not self.host.property_get(INVENTORY_SIGNATURE_PROPERTY):
             self.host.property_set(
                 INVENTORY_SIGNATURE_PROPERTY,
                 self.host.inventory_signature())
         return True
+
+    def _settings_observation(self):
+        observe = getattr(self.host, 'settings_observation', None)
+        if observe is not None:
+            return observe()
+        return self.host.settings_signature(), None
+
+    def _set_diagnostic_baseline(self, diagnostic):
+        if diagnostic is not None:
+            self.host.property_set(
+                SETTINGS_DIAGNOSTIC_PROPERTY,
+                json.dumps(diagnostic, separators=(',', ':')))
+
+    def _log_diagnostic_difference(self, diagnostic):
+        if diagnostic is None:
+            return
+        try:
+            previous = dict(json.loads(self.host.property_get(
+                SETTINGS_DIAGNOSTIC_PROPERTY)))
+            current = dict(diagnostic)
+            changed = sorted(name for name in current
+                             if current[name] != previous.get(name))
+        except (TypeError, ValueError):
+            changed = []
+        if changed:
+            self.host.log('settings signature fields changed: ' +
+                          ','.join(changed))
+        else:
+            self.host.log('settings signature changed outside diagnostic fields')
 
     def poll(self, force=False):
         if not self._active:
@@ -345,9 +397,10 @@ class TvOSSettingsGuard:
                     INVENTORY_SIGNATURE_PROPERTY, inventory)
 
             if self.host.property_get(SETTINGS_EDIT_PROPERTY) != '1':
-                settings = self.host.settings_signature()
+                settings, diagnostic = self._settings_observation()
                 if settings != self.host.property_get(
                         SETTINGS_SIGNATURE_PROPERTY):
+                    self._log_diagnostic_difference(diagnostic)
                     return self._mark_unsafe('settings_view_changed')
         except Exception as exc:
             self.host.log(
@@ -375,9 +428,9 @@ class TvOSSettingsGuard:
         if not self._active or self.is_unsafe():
             return False
         try:
-            self.host.property_set(
-                SETTINGS_SIGNATURE_PROPERTY,
-                self.host.settings_signature())
+            signature, diagnostic = self._settings_observation()
+            self.host.property_set(SETTINGS_SIGNATURE_PROPERTY, signature)
+            self._set_diagnostic_baseline(diagnostic)
             return True
         except Exception as exc:
             self.host.log(
