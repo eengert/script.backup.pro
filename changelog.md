@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.27
+
+### Added
+
+- Added diagnostic logging for Apple TV operation-boundary settings views and
+  settings-safeguard decisions. This release does not change backup behavior.
+
 ## Version 0.9.26
 
 ### Added
