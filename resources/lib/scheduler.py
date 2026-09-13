@@ -132,6 +132,18 @@ class BackupScheduler:
 
         if(backup.remoteConfigured()):
 
+            # The initial scheduler gate can be separated from planning by
+            # recovery and destination work. Recheck immediately before the
+            # backup reads its selection settings.
+            if (guard is not None
+                    and not guard.allow_operation('scheduler_backup_preplan')):
+                utils.log('scheduled backup blocked: Kodi restart required',
+                          xbmc.LOGWARNING)
+                utils.showNotification(utils.getString(30237))
+                return False
+            if guard is not None:
+                guard.log_operation_boundary('scheduler_backup_preplan')
+
             if(utils.getSettingInt('progress_mode') in [0, 1]):
                 backup.backup(True)
             else:

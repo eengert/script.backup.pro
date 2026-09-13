@@ -121,6 +121,8 @@ class SessionMarkerTests(unittest.TestCase):
             guard_module.SETTINGS_SIGNATURE_PROPERTY])
         self.assertEqual('inventory-a', host.properties[
             guard_module.INVENTORY_SIGNATURE_PROPERTY])
+        self.assertEqual('ready', host.properties[
+            guard_module.SAFETY_READY_PROPERTY])
 
     def test_same_version_same_pid_is_allowed(self):
         host = FakeHost(marker=marker())
@@ -128,6 +130,54 @@ class SessionMarkerTests(unittest.TestCase):
 
         self.assertTrue(guard.allow_operation())
         self.assertFalse(guard.is_unsafe())
+
+    def test_late_service_bootstrap_adopts_program_baseline(self):
+        # Program can establish a valid same-process baseline before Kodi
+        # starts the long-running service. A late service marker read must
+        # not turn that already safe session into a false bootstrap block.
+        host = FakeHost(marker=None)
+        host.properties.update({
+            guard_module.SETTINGS_SIGNATURE_PROPERTY: 'program-settings',
+            guard_module.INVENTORY_SIGNATURE_PROPERTY: 'program-inventory',
+        })
+        host.settings_value = 'program-settings'
+        host.inventory_value = 'program-inventory'
+        guard = guard_module.TvOSSettingsGuard(
+            host, service_initialization=True)
+
+        self.assertTrue(guard.initialize())
+        self.assertFalse(guard.is_unsafe())
+        self.assertEqual('ready', host.properties[
+            guard_module.SAFETY_READY_PROPERTY])
+        self.assertEqual([marker()], host.marker_writes)
+        self.assertTrue(guard.allow_operation('manual_backup_preplan'))
+        self.assertIn(
+            ('late service initialization adopted existing process baseline',
+             None), host.logs)
+
+    def test_operation_waits_while_service_advertises_initialization(self):
+        host = FakeHost(marker=marker())
+        host.properties[guard_module.SAFETY_READY_PROPERTY] = 'initializing'
+        guard = guard_module.TvOSSettingsGuard(host)
+
+        self.assertFalse(guard.allow_operation('manual_backup_preplan'))
+        self.assertFalse(guard.is_unsafe())
+        self.assertIn(
+            ('operation guard: action=manual_backup_preplan '
+             'result=restart_required reason=service_initializing '
+             'unsafe_before=false comparison=skipped', None), host.logs)
+
+    def test_service_only_advertises_initializing_during_startup(self):
+        host = FakeHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(
+            host, service_initialization=True)
+
+        self.assertTrue(guard.initialize())
+        self.assertEqual('ready', host.properties[
+            guard_module.SAFETY_READY_PROPERTY])
+        self.assertTrue(guard.poll(force=True))
+        self.assertEqual('ready', host.properties[
+            guard_module.SAFETY_READY_PROPERTY])
 
     def test_non_tvos_does_not_read_or_write_marker(self):
         host = FakeHost(marker=None, tvos=False)

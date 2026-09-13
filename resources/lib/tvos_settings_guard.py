@@ -26,6 +26,7 @@ SETTINGS_SIGNATURE_PROPERTY = ADDON_ID + '.settings_signature'
 INVENTORY_SIGNATURE_PROPERTY = ADDON_ID + '.addon_inventory_signature'
 SETTINGS_EDIT_PROPERTY = ADDON_ID + '.settings_edit_active'
 SETTINGS_DIAGNOSTIC_PROPERTY = ADDON_ID + '.settings_diagnostic_state'
+SAFETY_READY_PROPERTY = ADDON_ID + '.settings_safety_ready'
 
 # Values included here are operational choices, never credentials or paths.
 _BOOL_SETTINGS = (
@@ -286,13 +287,17 @@ class KodiSettingsSafetyHost:
 class TvOSSettingsGuard:
     """Fail closed when tvOS may be exposing stale add-on settings."""
 
-    def __init__(self, host=None, poll_interval=POLL_INTERVAL_SECONDS):
+    def __init__(self, host=None, poll_interval=POLL_INTERVAL_SECONDS,
+                 service_initialization=False):
         self.host = host or KodiSettingsSafetyHost()
         self.poll_interval = poll_interval
+        self.service_initialization = service_initialization
+        self._service_initialized = False
         self._last_poll = None
         self._active = self.host.is_tvos()
         self._last_comparison_performed = False
         self._last_changed_fields = []
+        self._last_block_reason = None
 
     def is_unsafe(self):
         return (self._active
@@ -301,6 +306,7 @@ class TvOSSettingsGuard:
     def _mark_unsafe(self, reason):
         self.host.property_set(UNSAFE_PROPERTY, '1')
         self.host.property_set(UNSAFE_REASON_PROPERTY, reason)
+        self.host.property_set(SAFETY_READY_PROPERTY, 'unsafe')
         self.host.log('restart required; reason=' + reason)
         return False
 
@@ -308,8 +314,13 @@ class TvOSSettingsGuard:
         for name in (
                 UNSAFE_PROPERTY, UNSAFE_REASON_PROPERTY,
                 SETTINGS_SIGNATURE_PROPERTY, INVENTORY_SIGNATURE_PROPERTY,
-                SETTINGS_EDIT_PROPERTY, SETTINGS_DIAGNOSTIC_PROPERTY):
+                SETTINGS_EDIT_PROPERTY, SETTINGS_DIAGNOSTIC_PROPERTY,
+                SAFETY_READY_PROPERTY):
             self.host.property_clear(name)
+
+    def _mark_ready(self):
+        if self._active:
+            self.host.property_set(SAFETY_READY_PROPERTY, 'ready')
 
     def _write_current_marker(self):
         self.host.write_marker({
@@ -321,7 +332,17 @@ class TvOSSettingsGuard:
     def initialize(self):
         if not self._active:
             return True
+        starting_service = (self.service_initialization
+                            and not self._service_initialized)
+        if starting_service:
+            # The service is the long-running observer. Advertise the narrow
+            # initialization window so another invocation never mistakes it
+            # for an already-established safe session.
+            self.host.property_set(SAFETY_READY_PROPERTY, 'initializing')
         if self.is_unsafe():
+            self.host.property_set(SAFETY_READY_PROPERTY, 'unsafe')
+            if starting_service:
+                self._service_initialized = True
             return False
 
         version = self.host.version()
@@ -330,24 +351,54 @@ class TvOSSettingsGuard:
             marker = self.host.read_marker()
             decision = marker_decision(marker, version, pid)
             if decision in ('bootstrap', 'invalid'):
+                if (self.service_initialization
+                        and self.host.property_get(
+                            SETTINGS_SIGNATURE_PROPERTY)):
+                    # A Program invocation already established a safe
+                    # process-local baseline. Kodi can start the service
+                    # later in that same session and expose a cache view in
+                    # which its marker is absent. That is not a new install
+                    # or live update; adopt the existing baseline instead of
+                    # racing an in-flight operation with a false bootstrap.
+                    self.host.log('late service initialization adopted '
+                                  'existing process baseline')
+                    self._write_current_marker()
+                    self._mark_ready()
+                    if starting_service:
+                        self._service_initialized = True
+                    return True
                 # Kodi exposes no supported install-vs-update signal to
                 # Python. The first marker-aware tvOS release therefore
                 # establishes its marker without reading or writing settings,
                 # then requires one restart before it trusts a baseline.
                 self._write_current_marker()
-                return self._mark_unsafe(decision)
+                result = self._mark_unsafe(decision)
+                if starting_service:
+                    self._service_initialized = True
+                return result
             if decision == 'live_update':
                 self._write_current_marker()
-                return self._mark_unsafe(decision)
+                result = self._mark_unsafe(decision)
+                if starting_service:
+                    self._service_initialized = True
+                return result
             if decision == 'restart':
                 self._clear_process_state()
                 self._write_current_marker()
-            return self._ensure_baselines()
+            ready = self._ensure_baselines()
+            if ready:
+                self._mark_ready()
+            if starting_service:
+                self._service_initialized = True
+            return ready
         except Exception as exc:
             self.host.log(
                 'could not establish safe session: %s: %s' % (
                     type(exc).__name__, exc))
-            return self._mark_unsafe('initialization_failed')
+            result = self._mark_unsafe('initialization_failed')
+            if starting_service:
+                self._service_initialized = True
+            return result
 
     def _ensure_baselines(self):
         if not self.host.property_get(SETTINGS_SIGNATURE_PROPERTY):
@@ -448,6 +499,8 @@ class TvOSSettingsGuard:
             return
         if allowed:
             reason = 'allowed'
+        elif self._last_block_reason:
+            reason = self._last_block_reason
         elif unsafe_before:
             reason = 'existing_unsafe_property'
         else:
@@ -508,8 +561,18 @@ class TvOSSettingsGuard:
         return True
 
     def allow_operation(self, action='operation'):
+        self._last_block_reason = None
         unsafe_before = self.is_unsafe()
-        allowed = self.poll(force=True)
+        # A distinct service interpreter can be in the small marker/baseline
+        # setup window. Do not let Program or scheduler planning pass through
+        # while that service has explicitly advertised that it is not ready.
+        if (self._active
+                and self.host.property_get(SAFETY_READY_PROPERTY)
+                == 'initializing'):
+            self._last_block_reason = 'service_initializing'
+            allowed = False
+        else:
+            allowed = self.poll(force=True)
         self._log_operation_decision(action, allowed, unsafe_before)
         return allowed
 

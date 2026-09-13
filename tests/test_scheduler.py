@@ -179,6 +179,30 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         guard.allow_operation.assert_called_once_with('scheduler_backup')
         self.assertIn('string:30237', fake_utils.notifications)
 
+    def test_unsafe_preplan_gate_blocks_scheduled_backup_before_planning(self):
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.side_effect = (True, False)
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup), \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertFalse(result)
+        self.assertEqual(
+            [mock.call('scheduler_backup'),
+             mock.call('scheduler_backup_preplan')],
+            guard.allow_operation.call_args_list)
+        self.assertFalse(any(
+            isinstance(event, tuple) and event[0] == 'backup'
+            for event in backup.events))
+        self.assertIn('string:30237', fake_utils.notifications)
+
 
 class RefusingDialog:
     """A Dialog that fails the test if scheduler init ever shows UI."""

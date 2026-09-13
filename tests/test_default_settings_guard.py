@@ -46,6 +46,20 @@ class ProgramEntryGuardTests(unittest.TestCase):
                        'advanced_editor', 'status'):
             self.assertIn(action, source)
 
+    def test_backup_and_restore_recheck_safety_immediately_before_planning(self):
+        source = (ROOT / 'default.py').read_text()
+
+        backup_gate = source.index("allow_operation('manual_backup_preplan')")
+        backup_boundary = source.index(
+            "log_operation_boundary('manual_backup_preplan')", backup_gate)
+        backup_run = source.index('backup.backup()', backup_boundary)
+        restore_gate = source.index("allow_operation('restore_preplan')")
+        restore_select = source.index('backup.selectRestore(', restore_gate)
+
+        self.assertLess(backup_gate, backup_boundary)
+        self.assertLess(backup_boundary, backup_run)
+        self.assertLess(restore_gate, restore_select)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -205,15 +205,26 @@ if(mode != -1):
                 selectedRestore = xbmcgui.Dialog().select(utils.getString(30010) + " - " + utils.getString(30021), pointNames)
 
             if(selectedRestore != -1):
-                backup.selectRestore(restorePoints[selectedRestore][0])
-
-            if('sets' in params):
-                backup.restore(selectedSets=params['sets'].split('|'))
-            else:
-                backup.restore()
+                if not settingsGuard.allow_operation('restore_preplan'):
+                    xbmcgui.Dialog().ok(utils.getString(30010),
+                                        utils.getString(30237))
+                else:
+                    settingsGuard.log_operation_boundary('restore_preplan')
+                    backup.selectRestore(restorePoints[selectedRestore][0])
+                    if('sets' in params):
+                        backup.restore(selectedSets=params['sets'].split('|'))
+                    else:
+                        backup.restore()
         elif(mode == BACKUP and backup.remoteConfigured()):
             # mode was BACKUP
-            backup.backup()
+            # The user can spend time in the confirmation dialog after the
+            # entry gate. Recheck immediately before planner settings reads.
+            if not settingsGuard.allow_operation('manual_backup_preplan'):
+                xbmcgui.Dialog().ok(utils.getString(30010),
+                                    utils.getString(30237))
+            else:
+                settingsGuard.log_operation_boundary('manual_backup_preplan')
+                backup.backup()
         else:
             # can't go any further
             xbmcgui.Dialog().ok(utils.getString(30010), utils.getString(30045))
