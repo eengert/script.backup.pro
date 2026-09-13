@@ -138,7 +138,9 @@ class XbmcBackup:
         if(utils.getSetting('remote_selection') == '1'):
             self._remote_raw_path = utils.getSetting('remote_path_2')
             self.remote_vfs = XBMCFileSystem(self._remote_raw_path)
-            utils.setSetting("remote_path", "")
+            # Do not clear remote_path here. Constructing Backup Pro must be
+            # read-only with respect to settings: on tvOS a normal settings
+            # write can make fresh wrappers expose default values mid-session.
         elif(utils.getSetting('remote_selection') == '0'):
             self._remote_raw_path = utils.getSetting("remote_path")
             self.remote_vfs = XBMCFileSystem(self._remote_raw_path)

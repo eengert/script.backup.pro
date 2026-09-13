@@ -93,6 +93,7 @@ from resources.lib.archive import (  # noqa: E402
     ARCHIVE_ID,
     ARCHIVE_VERSION,
     ArchiveValidationError,
+    build_manifest,
 )
 from resources.lib.backup import FileManager, XbmcBackup  # noqa: E402
 from resources.lib import backup as backup_module  # noqa: E402
@@ -430,6 +431,56 @@ class SkinRecoveryDispatchTests(unittest.TestCase):
 
 
 class BackupBridgeTests(unittest.TestCase):
+    def test_simple_selection_honors_database_and_thumbnail_settings(self):
+        """Regression for Example Room: unchecked sets must never be planned."""
+        original_bool = backup_module.utils.getSettingBool
+        original_int = backup_module.utils.getSettingInt
+        original_log = backup_module.utils.log
+        selected_dirs = {
+            name: {'root': '/profile/' + name, 'dirs': []}
+            for name in XbmcBackup.simple_directory_list
+        }
+        try:
+            backup_module.utils.getSettingInt = lambda _name: 0
+            backup_module.utils.log = lambda *_args: None
+            instance = object.__new__(XbmcBackup)
+            instance._automatic_exclusion_rules = None
+            instance._skin_managed_exclusions = []
+            instance._automaticExclusions = lambda: []
+            instance._readBackupConfig = lambda _path: selected_dirs
+            instance._addBackupDir = lambda name, root, _dirs: {
+                'name': name, 'source': root, 'dest': '/backup/',
+                'files': [], 'summary': {
+                    'included_files': 0, 'included_kib': 0.0,
+                    'excluded_files': 0, 'excluded_kib': 0.0,
+                    'exclusions': [],
+                },
+            }
+            instance._hashFile = lambda *_args, **_kwargs: None
+
+            for enabled, expected in (
+                    ({}, []),
+                    ({'backup_addons': True}, ['addons']),
+                    ({'backup_database': True}, ['database']),
+                    ({'backup_thumbnails': True}, ['thumbnails']),
+                    ({'backup_database': True, 'backup_thumbnails': True},
+                     ['database', 'thumbnails'])):
+                with self.subTest(enabled=enabled):
+                    backup_module.utils.getSettingBool = lambda name: bool(
+                        enabled.get(name, False))
+                    groups = instance._collectBackupFiles()
+                    self.assertEqual(expected, [group['name'] for group in groups])
+                    if groups:
+                        manifest = build_manifest(
+                            groups, lambda _path: ('unused', 0))
+                        self.assertEqual(expected, [directory['name'] for
+                                                    directory in
+                                                    manifest['directories']])
+        finally:
+            backup_module.utils.getSettingBool = original_bool
+            backup_module.utils.getSettingInt = original_int
+            backup_module.utils.log = original_log
+
     def test_backup_collection_collapses_and_logs_identical_case_alias(self):
         original_bool = backup_module.utils.getSettingBool
         original_int = backup_module.utils.getSettingInt
@@ -1555,6 +1606,21 @@ class RemoteConfiguredTests(unittest.TestCase):
             {'remote_selection': '1', 'remote_path_2': ''})
         self.assertEqual('/', instance.remote_base_path)
         self.assertFalse(instance.remoteConfigured())
+
+    def test_secondary_destination_never_rewrites_primary_setting(self):
+        writes = []
+        backup_module.utils.setSetting = lambda *args: writes.append(args)
+
+        instance = self._configure({
+            'remote_selection': '1',
+            'remote_path': 'smb://old-primary/path',
+            'remote_path_2': 'smb://selected-secondary/path',
+        })
+
+        self.assertEqual('smb://selected-secondary/path',
+                         instance._remote_raw_path)
+        self.assertTrue(instance.remoteConfigured())
+        self.assertEqual([], writes)
 
     def test_normalized_root_only_path_never_looks_configured(self):
         # a blank setting always normalizes to root_path == "/" - assert

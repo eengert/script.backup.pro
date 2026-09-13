@@ -207,7 +207,9 @@ class RuntimeDetectionTests(unittest.TestCase):
 
     def test_normal_backup_failure_does_not_poison_unchanged_session(self):
         # Backup results are not guard inputs.  A later operation with the
-        # same fresh settings and inventory remains allowed.
+        # same fresh settings and inventory remains allowed. In particular,
+        # backup construction must not rewrite a destination setting and
+        # thereby make this otherwise unchanged signature unsafe.
         self.assertTrue(self.guard.allow_operation())
         self.assertTrue(self.guard.allow_operation())
         self.assertFalse(self.guard.is_unsafe())
@@ -257,6 +259,17 @@ class SignaturePrivacyTests(unittest.TestCase):
         self.assertEqual(
             guard_module.normalized_settings_signature(first),
             guard_module.normalized_settings_signature(second))
+
+    def test_destination_presence_change_changes_signature(self):
+        # A Backup Pro operation used to clear remote_path while using the
+        # secondary destination. That write alone changes the guard's
+        # non-sensitive signature and was the Example Room false trigger.
+        configured = self.Addon({'remote_path': 'smb://configured/path'})
+        cleared = self.Addon({'remote_path': ''})
+
+        self.assertNotEqual(
+            guard_module.normalized_settings_signature(configured),
+            guard_module.normalized_settings_signature(cleared))
 
     def test_inventory_is_stable_across_enumeration_order(self):
         first = json.dumps({'result': {'addons': [
