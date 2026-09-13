@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.28
+
+### Fixed
+
+- Fixed an Apple TV timing issue where Backup Pro's background service could
+  initialize after a Program action had begun and incorrectly mark the session
+  unsafe. Settings-dependent operations now synchronize with service safety
+  initialization before planning work begins.
+
 ## Version 0.9.27
 
 ### Added
