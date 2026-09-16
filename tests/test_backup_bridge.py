@@ -1222,17 +1222,13 @@ class BackupBridgeTests(unittest.TestCase):
             ['settings.db'],
             [item['path'] for item in manifest['directories'][0]['files']])
 
-    def test_restore_accepts_manifest_kodi_version_field(self):
-        document = {
-            'archive_id': ARCHIVE_ID,
-            'archive_version': ARCHIVE_VERSION,
-            'kodi_version': '',
-            'directories': [{
-                'name': 'config',
-                'path': 'special://home/userdata',
-                'files': [],
-            }],
-        }
+    def _checkValidationFile_with_manifest(self, document, dialog=None):
+        """Shared plumbing for _checkValidationFile(): stages `document`
+        as the remote manifest and returns whatever _checkValidationFile()
+        does with it. No manifest field ever names the device/profile
+        that created it (see resources/lib/archive.py::build_manifest) -
+        the only restore-time acceptance gate is the kodi_version check
+        exercised by the tests below."""
 
         class TextFile:
             def __init__(self, path, mode):
@@ -1251,12 +1247,15 @@ class BackupBridgeTests(unittest.TestCase):
         original_file = getattr(backup_module.xbmcvfs, 'File', None)
         original_exists = getattr(backup_module.xbmcvfs, 'exists', None)
         original_delete = getattr(backup_module.xbmcvfs, 'delete', None)
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
         try:
             with tempfile.TemporaryDirectory() as directory:
                 backup_module.utils.data_dir = lambda: directory + '/'
                 backup_module.xbmcvfs.File = TextFile
                 backup_module.xbmcvfs.exists = os.path.exists
                 backup_module.xbmcvfs.delete = os.unlink
+                if dialog is not None:
+                    backup_module.xbmcgui.Dialog = lambda: dialog
 
                 instance = object.__new__(XbmcBackup)
                 instance.remote_vfs = object()
@@ -1268,8 +1267,7 @@ class BackupBridgeTests(unittest.TestCase):
                     return True
 
                 instance._copyFile = copy_manifest
-                result = instance._checkValidationFile('/backup/')
-                self.assertEqual('', result['kodi_version'])
+                return instance._checkValidationFile('/backup/')
         finally:
             backup_module.utils.data_dir = original_data_dir
             for name, value in (
@@ -1279,6 +1277,85 @@ class BackupBridgeTests(unittest.TestCase):
                     delattr(backup_module.xbmcvfs, name)
                 else:
                     setattr(backup_module.xbmcvfs, name, value)
+            if dialog is not None:
+                if original_dialog is None:
+                    delattr(backup_module.xbmcgui, 'Dialog')
+                else:
+                    backup_module.xbmcgui.Dialog = original_dialog
+
+    def test_restore_accepts_manifest_kodi_version_field(self):
+        document = {
+            'archive_id': ARCHIVE_ID,
+            'archive_version': ARCHIVE_VERSION,
+            'kodi_version': '',
+            'directories': [{
+                'name': 'config',
+                'path': 'special://home/userdata',
+                'files': [],
+            }],
+        }
+        result = self._checkValidationFile_with_manifest(document)
+        self.assertEqual('', result['kodi_version'])
+
+    def test_restore_of_archive_with_no_device_identity_field_is_accepted(self):
+        # A manifest built entirely on a different device (e.g. an Apple TV)
+        # carries no source-device/hostname/platform field at all - see
+        # resources/lib/archive.py::build_manifest and
+        # resources/lib/backup.py::_createValidationFile. Restoring it onto
+        # a different device is not a special case; it is simply the
+        # ordinary path, which this documents directly.
+        document = {
+            'archive_id': ARCHIVE_ID,
+            'archive_version': ARCHIVE_VERSION,
+            'kodi_version': '',
+            'addon_id': 'script.backup.pro',
+            'directories': [{
+                'name': 'addons',
+                'path': 'special://home/addons',
+                'files': [],
+            }],
+        }
+        result = self._checkValidationFile_with_manifest(document)
+        self.assertIsNotNone(result)
+        self.assertNotIn('source_device', result)
+        self.assertNotIn('device_id', result)
+        self.assertNotIn('hostname', result)
+
+    def test_restore_warns_but_continues_past_kodi_version_mismatch(self):
+        # The stubbed xbmc.getInfoLabel('System.BuildVersion') always
+        # returns '' (install_kodi_stubs() above); any non-empty
+        # kodi_version is therefore a mismatch and must only soft-warn,
+        # matching a genuine cross-device restore where the target's Kodi
+        # build differs from the archive's origin.
+        document = {
+            'archive_id': ARCHIVE_ID,
+            'archive_version': ARCHIVE_VERSION,
+            'kodi_version': '20.1.0 (a fictitious future build)',
+            'directories': [{
+                'name': 'config',
+                'path': 'special://home/userdata',
+                'files': [],
+            }],
+        }
+        dialog = FakeRecoveryDialog(yesno_return=True)
+        result = self._checkValidationFile_with_manifest(document, dialog)
+        self.assertIsNotNone(result)
+        self.assertTrue(any(call[0] == 'yesno' for call in dialog.calls))
+
+    def test_restore_declines_when_user_rejects_kodi_version_mismatch(self):
+        document = {
+            'archive_id': ARCHIVE_ID,
+            'archive_version': ARCHIVE_VERSION,
+            'kodi_version': '20.1.0 (a fictitious future build)',
+            'directories': [{
+                'name': 'config',
+                'path': 'special://home/userdata',
+                'files': [],
+            }],
+        }
+        dialog = FakeRecoveryDialog(yesno_return=False)
+        result = self._checkValidationFile_with_manifest(document, dialog)
+        self.assertIsNone(result)
 
     def test_folder_readback_verifies_manifest_and_payload(self):
         payload_hash = hashlib.sha256(b'abc').hexdigest()
@@ -2017,6 +2094,78 @@ class SkinSwitchConfirmationTests(unittest.TestCase):
                 backup_module.xbmcgui.Dialog = original_dialog
         self.assertTrue(any('Arctic Fuse 3' in m for m in messages))
         self.assertFalse(any('Choose Yes' in m for m in messages))
+
+
+class ArchiveDiscoveryTests(unittest.TestCase):
+    """Exercises XbmcBackup.listBackups(), the sole archive-discovery
+    mechanism the Restore menu uses (resources/lib/backup.py:172-200).
+    It never opens a ZIP or reads a manifest to find compressed archives -
+    only filename shape - so these tests also document exactly what
+    renaming a backup ZIP is and is not safe to do."""
+
+    class FakeRemoteVfs:
+        def __init__(self, dirs, files, manifest_dirs=frozenset(),
+                     sizes=None):
+            self._dirs = dirs
+            self._files = files
+            self._manifest_dirs = manifest_dirs
+            self._sizes = sizes or {}
+
+        def listdir(self, _directory):
+            return list(self._dirs), list(self._files)
+
+        def exists(self, path):
+            name = backup_module.MANIFEST_NAME
+            return path.rstrip('/').rsplit('/', 1)[-1] == name and (
+                path[:-len(name)].rstrip('/').rsplit('/', 1)[-1]
+                in self._manifest_dirs)
+
+        def fileSize(self, path):
+            return self._sizes.get(path.rsplit('/', 1)[-1], 0)
+
+    def _instance(self, dirs=(), files=(), manifest_dirs=frozenset(),
+                  sizes=None):
+        instance = object.__new__(XbmcBackup)
+        instance.remote_base_path = '/backup/'
+        instance.remote_vfs = self.FakeRemoteVfs(
+            dirs, files, manifest_dirs, sizes)
+        return instance
+
+    def test_zip_with_valid_twelve_digit_prefix_is_discovered(self):
+        instance = self._instance(files=['202609160835-exampleroom.zip'])
+        result = instance.listBackups()
+        self.assertEqual(1, len(result))
+        self.assertEqual('202609160835-exampleroom.zip', result[0][0])
+
+    def test_renaming_a_zip_to_drop_the_timestamp_prefix_hides_it(self):
+        # Answers "is renaming the ZIP safe?" directly: a copy named for
+        # its room/device instead of kept timestamp-first is silently
+        # invisible to Restore, not merely mislabeled.
+        instance = self._instance(files=['ExampleRoomBackup.zip'])
+        self.assertEqual([], instance.listBackups())
+
+    def test_zip_with_prefix_shorter_than_twelve_digits_is_ignored(self):
+        instance = self._instance(files=['2026091608.zip'])
+        self.assertEqual([], instance.listBackups())
+
+    def test_non_zip_file_is_ignored(self):
+        instance = self._instance(files=['202609160835-exampleroom.zip.txt'])
+        self.assertEqual([], instance.listBackups())
+
+    def test_folder_backup_requires_adjacent_manifest(self):
+        instance = self._instance(
+            dirs=['202609160835backup', '202609170900nomanifest'],
+            manifest_dirs={'202609160835backup'})
+        result = instance.listBackups()
+        self.assertEqual(['202609160835backup'], [entry[0] for entry in result])
+
+    def test_renaming_a_zip_to_a_still_valid_prefix_is_discovered(self):
+        # A rename that keeps a real, differently-formed YYYYMMDDHHMM
+        # prefix ahead of the first '.' still works - the constraint is
+        # the leading 12 digits, not the original filename overall.
+        instance = self._instance(files=['202609160835.zip'])
+        result = instance.listBackups()
+        self.assertEqual(['202609160835.zip'], [entry[0] for entry in result])
 
 
 class RemoteConfiguredTests(unittest.TestCase):
