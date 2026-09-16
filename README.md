@@ -66,7 +66,28 @@ Backup Pro will use independently generated artwork before release.
 
 ## Device support
 
-Development and restore testing target Kodi on macOS. No Backup Pro build may
-write to an Apple TV during this project. Until physical-device testing is
-separately authorized and completed, Apple TV and tvOS support must be labeled
-unvalidated.
+Development and most restore testing target Kodi on macOS. Real Apple TV/tvOS
+validation has since been separately authorized and performed extensively
+across many releases (see `changelog.md` for per-release detail).
+
+Backup Pro's backup/restore/retention/cleanup code talks to a remote
+destination entirely through Kodi's own VFS layer (`xbmcvfs`), with no
+transport-specific logic anywhere in Backup Pro itself beyond recognizing a
+destination as local vs. remote for diagnostics. Any Kodi-VFS-supported
+network scheme therefore works identically as far as Backup Pro is concerned;
+archive verification is unaffected by which transport is used.
+
+Current operational transport guidance, based on real-world reliability
+rather than a Backup Pro limitation:
+
+- **Apple TV/tvOS**: prefer NFS. Kodi's SMB/VFS client has shown intermittent
+  native failures on tvOS (e.g. `Create - Error( Invalid argument )` at
+  remote destination creation) with no evidence of Backup Pro-side
+  destination drift in those incidents; a compressed backup and restore over
+  NFS have been validated successfully on a real Apple TV. SMB remains usable
+  when NFS is not an option.
+- **Android (e.g. Nvidia Shield)**: SMB has been validated successfully;
+  there is no current reason to move away from it.
+
+This is operational guidance for users configuring a destination, not an
+enforced restriction in Backup Pro itself.
