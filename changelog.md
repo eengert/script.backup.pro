@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.35
+
+### Added
+
+- Added privacy-safe SMB destination diagnostics to help isolate
+  intermittent Kodi/tvOS SMB failures.
+
+### Security
+
+- Hardened URI redaction so credential-bearing destinations cannot expose
+  credentials, query strings, or fragments through Backup Pro logging.
+
+No SMB transfer, authentication, retry, or protocol behavior changed.
+
 ## Version 0.9.34
 
 ### Fixed
