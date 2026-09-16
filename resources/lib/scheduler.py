@@ -118,12 +118,25 @@ class BackupScheduler:
                     progress_mode = utils.getSettingInt('progress_mode')
                     attempted = self.doScheduledBackup(progress_mode)
 
-                    if blocked_reason == 'live_update' and not attempted:
-                        # Recovery was blocked; the schedule stays due and
-                        # is retried at the next eligible opportunity -
-                        # never consumed by a failed recovery attempt.
-                        xbmc.sleep(500)
-                        continue
+                    if not attempted:
+                        # Re-check the reason fresh here rather than reuse
+                        # `blocked_reason` captured before the call: a live
+                        # update landing during doScheduledBackup() itself
+                        # (a narrow window, but a real one - the session
+                        # could have been safe when this iteration started
+                        # and become unsafe mid-call) must be caught too,
+                        # not just the case where it was already unsafe
+                        # before doScheduledBackup() was ever invoked.
+                        reason_now = (self.settings_guard.unsafe_reason()
+                                     if self.settings_guard is not None
+                                     else None)
+                        if reason_now == 'live_update':
+                            # Recovery was blocked; the schedule stays due
+                            # and is retried at the next eligible
+                            # opportunity - never consumed by a failed
+                            # recovery attempt.
+                            xbmc.sleep(500)
+                            continue
 
                     # check if we should shut the computer down
                     if(utils.getSettingBool("cron_shutdown")):

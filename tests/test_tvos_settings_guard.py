@@ -654,6 +654,28 @@ class SchedulerRecoveryTests(unittest.TestCase):
         self.assertEqual(
             'recovery_destination_invalid', guard.last_block_reason())
 
+    def test_unexpected_validation_exception_fails_closed(self):
+        """Defense in depth: destination_state_valid()/
+        critical_scheduler_baseline() should never raise for a real
+        capture, but if a future field-list drift between this module
+        and BackupOperationSettings ever made one raise, recovery must
+        fail closed (and the scheduler thread must not crash), not
+        propagate the exception.
+        """
+        guard, host = _live_update_guard()
+
+        class ExplodingCapture:
+            def destination_state_valid(self):
+                raise KeyError('a_field_operation_settings_forgot')
+
+        exploding = ExplodingCapture()
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(exploding, exploding)))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_validation_failed', guard.last_block_reason())
+
     def test_missing_trusted_baseline_blocks(self):
         host = FakeHost(marker=marker())  # no critical_scheduler_baseline
         guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
@@ -841,6 +863,27 @@ class SchedulerRecoveryTests(unittest.TestCase):
             json.dumps(DEFAULT_CRITICAL_BASELINE, sort_keys=True,
                        separators=(',', ':')),
             host.properties[guard_module.CRITICAL_BASELINE_PROPERTY])
+
+    def test_restart_clears_and_reestablishes_the_critical_baseline(self):
+        """A genuine Kodi restart (pid change) must discard whatever
+        critical baseline existed before it - including one poisoned by a
+        live_update episode that never got a chance to be trusted - and
+        establish a fresh one from the now-current settings, exactly like
+        the existing settings-signature/inventory baselines already do.
+        """
+        host = FakeCriticalBaselineHost(marker=marker(pid=99))
+        host.properties[guard_module.CRITICAL_BASELINE_PROPERTY] = (
+            json.dumps({'remote_selection': 'stale-pre-restart-value'}))
+        host.critical_baseline_value = {
+            'remote_selection': 'fresh-post-restart-value'}
+        guard = guard_module.TvOSSettingsGuard(host)
+
+        self.assertTrue(guard.initialize())
+
+        stored = json.loads(
+            host.properties[guard_module.CRITICAL_BASELINE_PROPERTY])
+        self.assertEqual(
+            {'remote_selection': 'fresh-post-restart-value'}, stored)
 
     def test_legitimate_settings_edit_refreshes_the_critical_baseline(self):
         host = FakeCriticalBaselineHost(marker=marker())

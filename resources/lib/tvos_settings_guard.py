@@ -871,7 +871,22 @@ class TvOSSettingsGuard:
             self.host.log('scheduler recovery capture was inconsistent')
             self._last_block_reason = 'recovery_capture_inconsistent'
             return None
-        if not first.destination_state_valid():
+
+        try:
+            destination_valid = first.destination_state_valid()
+            fresh = first.critical_scheduler_baseline()
+        except Exception as exc:
+            # Defensive: these should never raise for a real capture()
+            # result, but a future mismatch between this module's
+            # critical-field-name lists and BackupOperationSettings' own
+            # value-supplying dicts (operation_settings.py) must fail this
+            # recovery attempt closed rather than crash the scheduler's
+            # service thread.
+            self.host.log('scheduler recovery validation failed: %s' %
+                          type(exc).__name__)
+            self._last_block_reason = 'recovery_validation_failed'
+            return None
+        if not destination_valid:
             self.host.log('scheduler recovery destination state invalid')
             self._last_block_reason = 'recovery_destination_invalid'
             return None
@@ -881,7 +896,6 @@ class TvOSSettingsGuard:
             self.host.log('scheduler recovery has no trusted baseline')
             self._last_block_reason = 'recovery_no_trusted_baseline'
             return None
-        fresh = first.critical_scheduler_baseline()
         unvalidated = sorted(
             name for name in fresh if name not in baseline)
         if unvalidated:

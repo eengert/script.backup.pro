@@ -479,6 +479,36 @@ class SchedulerStartLoopTests(unittest.TestCase):
         scheduler.doScheduledBackup.assert_called_once()
         scheduler.findNextRun.assert_called_once_with(100.0)
 
+    def test_live_update_landing_mid_attempt_still_does_not_advance(self):
+        """A narrow but real race: the session is safe when this iteration
+        starts (so the top-of-loop check never sees 'live_update' and
+        never routes through the cooldown gate), but a live update lands
+        and doScheduledBackup() itself observes it and fails. next_run
+        must still not advance - the post-attempt reason must be
+        re-checked fresh, not reused from before the call.
+        """
+        guard = mock.Mock()
+        guard.poll.return_value = True  # safe at the top of this tick
+        guard.unsafe_reason.return_value = 'live_update'  # ...but not by now
+        scheduler = self._scheduler(guard, iterations=1)
+        scheduler.doScheduledBackup = mock.Mock(return_value=False)
+        scheduler.findNextRun = mock.Mock()
+
+        with mock.patch.object(
+                scheduler_module.time, 'time', return_value=100.0), \
+                mock.patch.object(scheduler_module.xbmc, 'sleep'), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingBool',
+                    return_value=False), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingInt',
+                    return_value=1):
+            scheduler.start()
+
+        scheduler.doScheduledBackup.assert_called_once()
+        guard.unsafe_reason.assert_called_once()
+        scheduler.findNextRun.assert_not_called()
+
     def test_repeated_ticks_do_not_duplicate_a_successful_run(self):
         guard = mock.Mock()
         guard.poll.return_value = True
