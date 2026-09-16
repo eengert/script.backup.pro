@@ -552,5 +552,357 @@ class FreshAddonWrapperTests(unittest.TestCase):
         host.set_setting.assert_not_called()
 
 
+DEFAULT_CRITICAL_BASELINE = {'remote_selection': 'baseline-remote-selection',
+                            'backup_addons': 'baseline-backup-addons'}
+
+
+class FakeCriticalBaselineHost(FakeObservationHost):
+    """Host double additionally exposing the trusted scheduler baseline."""
+    def __init__(self, *args, **kwargs):
+        super(FakeCriticalBaselineHost, self).__init__(*args, **kwargs)
+        self.critical_baseline_value = dict(DEFAULT_CRITICAL_BASELINE)
+
+    def critical_scheduler_baseline(self):
+        return dict(self.critical_baseline_value)
+
+
+@dataclass(frozen=True)
+class FakeSchedulerCapture:
+    value: str
+    destination_valid: bool = True
+    critical_baseline: dict = None
+
+    def destination_state_valid(self):
+        return self.destination_valid
+
+    def critical_scheduler_baseline(self):
+        return dict(self.critical_baseline or DEFAULT_CRITICAL_BASELINE)
+
+
+def _live_update_guard(host=None):
+    host = host or FakeCriticalBaselineHost(marker=marker())
+    guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+    guard.initialize()
+    host.properties[guard_module.UNSAFE_PROPERTY] = '1'
+    host.properties[guard_module.UNSAFE_REASON_PROPERTY] = 'live_update'
+    host.properties[guard_module.SAFETY_READY_PROPERTY] = 'unsafe'
+    return guard, host
+
+
+class SchedulerRecoveryTests(unittest.TestCase):
+    """admit_scheduler_recovery_snapshot() - the scheduler-only recovery
+    path for a `live_update` unsafe reason. See
+    docs/TVOS_LIVE_UPDATE_SCHEDULER_RECOVERY_REVIEW.md for the design.
+    """
+
+    def test_matching_captures_valid_destination_and_baseline_match_admit(self):
+        guard, host = _live_update_guard()
+        capture = FakeSchedulerCapture('stable')
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertEqual(capture, result)
+        self.assertTrue(guard.is_unsafe())
+        self.assertEqual(
+            'live_update',
+            host.properties[guard_module.UNSAFE_REASON_PROPERTY])
+        self.assertTrue(guard.recovery_attempt_was_first())
+
+    def test_recovery_never_clears_the_global_unsafe_state(self):
+        guard, host = _live_update_guard()
+        capture = FakeSchedulerCapture('stable')
+
+        guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertEqual('1', host.properties[guard_module.UNSAFE_PROPERTY])
+        self.assertEqual(
+            'unsafe', host.properties[guard_module.SAFETY_READY_PROPERTY])
+        self.assertFalse(guard.allow_operation('manual_backup'))
+        self.assertFalse(guard.allow_operation('program_open'))
+
+    def test_mismatched_double_capture_blocks(self):
+        guard, host = _live_update_guard()
+
+        result = guard.admit_scheduler_recovery_snapshot(mock.Mock(
+            side_effect=(FakeSchedulerCapture('one'),
+                         FakeSchedulerCapture('two'))))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_capture_inconsistent', guard.last_block_reason())
+
+    def test_capture_exception_blocks(self):
+        guard, host = _live_update_guard()
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=RuntimeError('addon unavailable')))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_capture_failed', guard.last_block_reason())
+
+    def test_invalid_destination_blocks(self):
+        guard, host = _live_update_guard()
+        capture = FakeSchedulerCapture('stable', destination_valid=False)
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_destination_invalid', guard.last_block_reason())
+
+    def test_missing_trusted_baseline_blocks(self):
+        host = FakeHost(marker=marker())  # no critical_scheduler_baseline
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+        guard.initialize()
+        host.properties[guard_module.UNSAFE_PROPERTY] = '1'
+        host.properties[guard_module.UNSAFE_REASON_PROPERTY] = 'live_update'
+        capture = FakeSchedulerCapture('stable')
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_no_trusted_baseline', guard.last_block_reason())
+
+    def test_critical_field_unknown_to_baseline_fails_closed(self):
+        """Schema evolution: the running (post-update) code recognizes a
+        critical field the pre-update trusted baseline never captured -
+        must fail closed, not silently skip it.
+        """
+        guard, host = _live_update_guard()
+        capture = FakeSchedulerCapture(
+            'stable', critical_baseline=dict(
+                DEFAULT_CRITICAL_BASELINE, brand_new_critical_field='x'))
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_field_unvalidated', guard.last_block_reason())
+
+    def test_stable_but_wrong_capture_fails_baseline_comparison(self):
+        """Two fresh captures agreeing with EACH OTHER is not sufficient:
+        Kodi/tvOS can return a stable but stale/default view. Only a
+        mismatch against the separately-trusted pre-update baseline
+        catches this - this is the core design requirement this whole
+        recovery path exists to satisfy.
+        """
+        guard, host = _live_update_guard()
+        stably_wrong = FakeSchedulerCapture(
+            'stable', critical_baseline={
+                'remote_selection': 'DEFAULT-remote-selection',
+                'backup_addons': 'DEFAULT-backup-addons'})
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(stably_wrong, stably_wrong)))
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            'recovery_baseline_mismatch', guard.last_block_reason())
+
+    def test_baseline_mismatch_log_names_fields_never_values(self):
+        guard, host = _live_update_guard()
+        stably_wrong = FakeSchedulerCapture(
+            'stable', critical_baseline={
+                'remote_selection': 'DEFAULT-remote-selection',
+                'backup_addons': 'baseline-backup-addons'})
+
+        guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(stably_wrong, stably_wrong)))
+
+        messages = '\n'.join(message for message, _level in host.logs)
+        self.assertIn('remote_selection', messages)
+        self.assertNotIn('DEFAULT-remote-selection', messages)
+        self.assertNotIn('baseline-remote-selection', messages)
+
+    def test_only_live_update_reason_is_eligible(self):
+        for reason in ('bootstrap', 'invalid', 'initialization_failed',
+                       'safety_check_failed', 'settings_view_changed',
+                       'settings_rebaseline_failed',
+                       'snapshot_capture_failed'):
+            with self.subTest(reason=reason):
+                host = FakeCriticalBaselineHost(marker=marker())
+                guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+                guard.initialize()
+                host.properties[guard_module.UNSAFE_PROPERTY] = '1'
+                host.properties[guard_module.UNSAFE_REASON_PROPERTY] = reason
+                capture = FakeSchedulerCapture('stable')
+
+                result = guard.admit_scheduler_recovery_snapshot(
+                    mock.Mock(side_effect=(capture, capture)))
+
+                self.assertIsNone(result)
+                self.assertEqual(
+                    'unsafe_reason_not_recoverable', guard.last_block_reason())
+
+    def test_service_initializing_blocks_before_checking_reason(self):
+        guard, host = _live_update_guard()
+        host.properties[guard_module.SAFETY_READY_PROPERTY] = 'initializing'
+        capture = FakeSchedulerCapture('stable')
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertIsNone(result)
+        self.assertEqual('service_initializing', guard.last_block_reason())
+
+    def test_safe_session_has_nothing_to_recover(self):
+        host = FakeCriticalBaselineHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+        guard.initialize()
+        capture = FakeSchedulerCapture('stable')
+
+        result = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertIsNone(result)
+        self.assertEqual('not_unsafe', guard.last_block_reason())
+
+    def test_repeated_attempts_are_throttled_by_a_cooldown(self):
+        guard, host = _live_update_guard()
+        capture = FakeSchedulerCapture('stable')
+
+        first = guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+        self.assertEqual(capture, first)
+        self.assertTrue(guard.recovery_attempt_was_first())
+
+        # A second attempt inside the cooldown window must not even invoke
+        # the capture callable again - avoids repeated expensive work (and
+        # repeated logging) on every 500ms scheduler tick while blocked.
+        second_capture_fn = mock.Mock()
+        second = guard.admit_scheduler_recovery_snapshot(second_capture_fn)
+
+        self.assertIsNone(second)
+        self.assertEqual('recovery_cooldown', guard.last_block_reason())
+        self.assertFalse(guard.recovery_attempt_was_first())
+        second_capture_fn.assert_not_called()
+
+    def test_recovery_ready_reports_cooldown_state_without_attempting(self):
+        guard, host = _live_update_guard()
+        capture = FakeSchedulerCapture('stable')
+        self.assertTrue(guard.scheduler_recovery_ready())
+
+        guard.admit_scheduler_recovery_snapshot(
+            mock.Mock(side_effect=(capture, capture)))
+
+        self.assertFalse(guard.scheduler_recovery_ready())
+        host.now += guard_module.RECOVERY_COOLDOWN_SECONDS
+        self.assertTrue(guard.scheduler_recovery_ready())
+
+    def test_recovered_snapshot_tolerates_sticky_live_update_reason(self):
+        guard, host = _live_update_guard()
+
+        self.assertFalse(guard.operation_revoked(
+            admitted_snapshot=True, recovered_from_live_update=True))
+
+    def test_recovered_snapshot_still_stops_for_other_reasons(self):
+        # settings_view_changed is deliberately excluded here: an admitted
+        # snapshot (recovered or not) already tolerates that SAME reason
+        # per the pre-existing admitted_snapshot policy (see
+        # test_admitted_snapshot_continues_after_later_settings_view_change
+        # above) - Task D of the scheduler-recovery work keeps that
+        # unchanged rather than narrowing it for recovered operations.
+        for reason in ('bootstrap', 'invalid', 'safety_check_failed'):
+            with self.subTest(reason=reason):
+                host = FakeHost(marker=marker())
+                guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+                guard.initialize()
+                host.properties[guard_module.UNSAFE_PROPERTY] = '1'
+                host.properties[guard_module.UNSAFE_REASON_PROPERTY] = reason
+                self.assertTrue(guard.operation_revoked(
+                    admitted_snapshot=True, recovered_from_live_update=True))
+
+    def test_unsafe_reason_reports_none_when_safe_or_inactive(self):
+        host = FakeCriticalBaselineHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+        guard.initialize()
+        self.assertIsNone(guard.unsafe_reason())
+
+        non_tvos_host = FakeCriticalBaselineHost(marker=marker(), tvos=False)
+        non_tvos_guard = guard_module.TvOSSettingsGuard(non_tvos_host)
+        self.assertIsNone(non_tvos_guard.unsafe_reason())
+
+    def test_unsafe_reason_reports_the_sticky_reason(self):
+        guard, host = _live_update_guard()
+        self.assertEqual('live_update', guard.unsafe_reason())
+
+    def test_critical_baseline_established_alongside_other_baselines(self):
+        host = FakeCriticalBaselineHost(marker=marker())
+        guard_module.TvOSSettingsGuard(host, poll_interval=1.0).initialize()
+
+        self.assertEqual(
+            json.dumps(DEFAULT_CRITICAL_BASELINE, sort_keys=True,
+                       separators=(',', ':')),
+            host.properties[guard_module.CRITICAL_BASELINE_PROPERTY])
+
+    def test_legitimate_settings_edit_refreshes_the_critical_baseline(self):
+        host = FakeCriticalBaselineHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+        guard.initialize()
+        host.critical_baseline_value = {'remote_selection': 'new-value'}
+
+        self.assertTrue(guard.rebaseline_settings())
+
+        self.assertEqual(
+            json.dumps({'remote_selection': 'new-value'}, sort_keys=True,
+                       separators=(',', ':')),
+            host.properties[guard_module.CRITICAL_BASELINE_PROPERTY])
+
+    def test_host_without_critical_baseline_support_degrades_gracefully(self):
+        # Older/simpler test doubles (plain FakeHost) must not raise - the
+        # absence of critical-baseline support simply means scheduler
+        # recovery will fail closed later (no trusted baseline), not that
+        # ordinary initialize()/allow_operation() breaks.
+        host = FakeHost(marker=marker())
+        guard = guard_module.TvOSSettingsGuard(host, poll_interval=1.0)
+
+        self.assertTrue(guard.initialize())
+        self.assertNotIn(
+            guard_module.CRITICAL_BASELINE_PROPERTY, host.properties)
+
+
+class CriticalSchedulerBaselineDigestTests(unittest.TestCase):
+    def test_only_named_critical_fields_are_represented(self):
+        bool_values = {name: False for name in guard_module._BOOL_SETTINGS}
+        int_values = {name: 0 for name in guard_module._INT_SETTINGS}
+        string_values = {name: '' for name in guard_module._STRING_SETTINGS}
+        presence_values = {name: False
+                           for name in guard_module._PRESENCE_SETTINGS}
+
+        baseline = guard_module.critical_scheduler_baseline_from_values(
+            bool_values, int_values, string_values, presence_values)
+
+        expected_keys = (set(guard_module._CRITICAL_BOOL_SETTINGS)
+                         | set(guard_module._CRITICAL_INT_SETTINGS)
+                         | set(guard_module._STRING_SETTINGS)
+                         | set(guard_module._PRESENCE_SETTINGS))
+        self.assertEqual(expected_keys, set(baseline))
+        # A non-critical bool setting (e.g. always_prompt_restore_settings,
+        # verbose_logging, progress_mode) must never appear - a legitimate
+        # schema change to one of those must never affect this baseline.
+        self.assertNotIn('always_prompt_restore_settings', baseline)
+        self.assertNotIn('progress_mode', baseline)
+
+    def test_free_form_string_values_are_digested_not_stored(self):
+        bool_values = {name: False for name in guard_module._BOOL_SETTINGS}
+        int_values = {name: 0 for name in guard_module._INT_SETTINGS}
+        string_values = dict.fromkeys(
+            guard_module._STRING_SETTINGS, 'MyPersonalSuffixText')
+        presence_values = {name: False
+                           for name in guard_module._PRESENCE_SETTINGS}
+
+        baseline = guard_module.critical_scheduler_baseline_from_values(
+            bool_values, int_values, string_values, presence_values)
+
+        self.assertNotIn('MyPersonalSuffixText', json.dumps(baseline))
+
+
 if __name__ == '__main__':
     unittest.main()

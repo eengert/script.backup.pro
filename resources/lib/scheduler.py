@@ -84,19 +84,46 @@ class BackupScheduler:
 
         while(not self.monitor.abortRequested()):
 
+            blocked_reason = None
             if (self.settings_guard is not None
                     and not self.settings_guard.poll()):
-                self.enabled = False
-                xbmc.sleep(500)
-                continue
+                blocked_reason = self.settings_guard.unsafe_reason()
+                if blocked_reason != 'live_update':
+                    # Every unsafe reason other than a live update
+                    # continues to fully disable the scheduler until a
+                    # Kodi restart, exactly as before.
+                    self.enabled = False
+                    xbmc.sleep(500)
+                    continue
+                # A live update may still admit one due scheduled backup
+                # through doScheduledBackup()'s own recovery check below.
+                # self.enabled is left at its last known value, same as
+                # the safe path - only that one narrow recovery path is
+                # new here.
 
             if(self.enabled):
                 # scheduler is still on
                 now = time.time()
 
                 if(self.next_run <= now):
+                    if (blocked_reason == 'live_update'
+                            and not self.settings_guard.scheduler_recovery_ready()):
+                        # Still cooling down since the last recovery
+                        # attempt - stay due, retry later without
+                        # re-running (and re-logging) the check every
+                        # 500ms tick.
+                        xbmc.sleep(500)
+                        continue
+
                     progress_mode = utils.getSettingInt('progress_mode')
-                    self.doScheduledBackup(progress_mode)
+                    attempted = self.doScheduledBackup(progress_mode)
+
+                    if blocked_reason == 'live_update' and not attempted:
+                        # Recovery was blocked; the schedule stays due and
+                        # is retried at the next eligible opportunity -
+                        # never consumed by a failed recovery attempt.
+                        xbmc.sleep(500)
+                        continue
 
                     # check if we should shut the computer down
                     if(utils.getSettingBool("cron_shutdown")):
@@ -113,17 +140,42 @@ class BackupScheduler:
         del self.monitor
 
     def doScheduledBackup(self, progress_mode):
+        """Run the due scheduled backup, if eligible.
+
+        Returns True once a backup has actually been attempted (dispatched
+        to XbmcBackup.backup()), False if admission/recovery was blocked
+        before that point. The caller (start()) uses this to decide
+        whether the schedule may advance - a blocked attempt must never
+        consume the due schedule.
+        """
         guard = getattr(self, 'settings_guard', None)
+        operation_settings = None
+        recovered_from_live_update = False
+
         if guard is not None and not guard.allow_operation('scheduler_backup'):
-            utils.log('scheduled backup blocked: Kodi restart required',
-                      xbmc.LOGWARNING)
-            utils.showNotification(utils.getString(30237))
-            return False
-
-        if guard is not None:
+            operation_settings = guard.admit_scheduler_recovery_snapshot(
+                BackupOperationSettings.capture)
+            if operation_settings is None:
+                reason = guard.last_block_reason() or 'unknown'
+                if guard.recovery_attempt_was_first():
+                    utils.log(
+                        'scheduled backup blocked: Kodi restart required '
+                        'for interactive use; scheduled recovery blocked '
+                        '(reason=%s); will retry at the next eligible '
+                        'opportunity' % reason, xbmc.LOGWARNING)
+                    utils.showNotification(utils.getString(30237))
+                elif reason != 'recovery_cooldown':
+                    utils.log(
+                        'scheduled backup blocked: Kodi restart required '
+                        '(reason=%s)' % reason, xbmc.LOGWARNING)
+                return False
+            recovered_from_live_update = True
+            utils.log(
+                'scheduled backup recovered after a live update; '
+                'interactive access still requires a Kodi restart',
+                xbmc.LOGWARNING)
+        elif guard is not None:
             guard.log_operation_boundary('scheduler_backup')
-
-        if guard is not None:
             operation_settings = guard.admit_backup_snapshot(
                 BackupOperationSettings.capture)
             if operation_settings is None:
@@ -141,7 +193,8 @@ class BackupScheduler:
             utils.showNotification(utils.getString(30053))
 
         backup = XbmcBackup(
-            settings_guard=guard, operation_settings=operation_settings)
+            settings_guard=guard, operation_settings=operation_settings,
+            recovered_from_live_update=recovered_from_live_update)
         # background/scheduled execution must never open a recovery dialog
         # or switch skins; only log that interactive recovery is pending.
         backup.checkPendingSkinRestoreBackground()
@@ -150,8 +203,21 @@ class BackupScheduler:
 
             # The initial scheduler gate can be separated from planning by
             # recovery and destination work. Recheck immediately before the
-            # backup reads its selection settings.
-            if (guard is not None
+            # backup reads its selection settings. A recovered operation
+            # uses the same tolerant check backup.py's own selection
+            # boundary uses (the sticky live_update reason it was already
+            # validated against must not revoke it here either); every
+            # other case uses the ordinary guard check unchanged.
+            if recovered_from_live_update:
+                if guard.operation_revoked(
+                        admitted_snapshot=True,
+                        recovered_from_live_update=True):
+                    utils.log(
+                        'scheduled backup blocked: Kodi restart required',
+                        xbmc.LOGWARNING)
+                    utils.showNotification(utils.getString(30237))
+                    return False
+            elif (guard is not None
                     and not guard.allow_operation('scheduler_backup_preplan')):
                 utils.log('scheduled backup blocked: Kodi restart required',
                           xbmc.LOGWARNING)
@@ -170,8 +236,11 @@ class BackupScheduler:
                 # disable the scheduler after this run
                 self.enabled = False
                 utils.setSetting('enable_scheduler', 'false')
+
+            return True
         else:
             utils.showNotification(utils.getString(30045))
+            return False
 
     def findNextRun(self, now):
         progress_mode = utils.getSettingInt('progress_mode')

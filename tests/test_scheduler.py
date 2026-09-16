@@ -175,6 +175,9 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         guard = mock.Mock()
         guard.allow_operation.return_value = False
         guard.admit_backup_snapshot.return_value = None
+        guard.admit_scheduler_recovery_snapshot.return_value = None
+        guard.last_block_reason.return_value = 'unsafe_reason_not_recoverable'
+        guard.recovery_attempt_was_first.return_value = True
         scheduler = object.__new__(scheduler_module.BackupScheduler)
         scheduler.enabled = True
         scheduler.settings_guard = guard
@@ -187,6 +190,7 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
         self.assertFalse(result)
         ctor.assert_not_called()
         guard.allow_operation.assert_called_once_with('scheduler_backup')
+        guard.admit_scheduler_recovery_snapshot.assert_called_once()
         self.assertIn('string:30237', fake_utils.notifications)
 
     def test_unsafe_preplan_gate_blocks_scheduled_backup_before_planning(self):
@@ -231,7 +235,280 @@ class SchedulerBackgroundDeferralTests(unittest.TestCase):
             scheduler.doScheduledBackup(1)
 
         ctor.assert_called_once_with(
-            settings_guard=guard, operation_settings=snapshot)
+            settings_guard=guard, operation_settings=snapshot,
+            recovered_from_live_update=False)
+
+
+class FakeMonitor:
+    """Runs the loop body exactly `iterations` times, then aborts."""
+    def __init__(self, iterations):
+        self._remaining = iterations
+
+    def abortRequested(self):
+        if self._remaining <= 0:
+            return True
+        self._remaining -= 1
+        return False
+
+
+class SchedulerLiveUpdateRecoveryDoScheduledBackupTests(unittest.TestCase):
+    """doScheduledBackup()'s wiring of admit_scheduler_recovery_snapshot()."""
+
+    def test_recovered_snapshot_runs_backup_and_returns_true(self):
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.return_value = False
+        snapshot = FakeOperationSettings()
+        guard.admit_scheduler_recovery_snapshot.return_value = snapshot
+        guard.operation_revoked.return_value = False
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup) as ctor, \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertTrue(result)
+        ctor.assert_called_once_with(
+            settings_guard=guard, operation_settings=snapshot,
+            recovered_from_live_update=True)
+        guard.operation_revoked.assert_called_once_with(
+            admitted_snapshot=True, recovered_from_live_update=True)
+        guard.allow_operation.assert_called_once_with('scheduler_backup')
+        self.assertTrue(any(
+            isinstance(event, tuple) and event[0] == 'backup'
+            for event in backup.events))
+
+    def test_recovery_admission_blocked_notifies_once_and_returns_false(self):
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.return_value = False
+        guard.admit_scheduler_recovery_snapshot.return_value = None
+        guard.last_block_reason.return_value = 'recovery_baseline_mismatch'
+        guard.recovery_attempt_was_first.return_value = True
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup) as ctor, \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertFalse(result)
+        ctor.assert_not_called()
+        self.assertEqual(1, fake_utils.notifications.count('string:30237'))
+
+    def test_repeat_cooldown_skip_does_not_notify_again(self):
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.return_value = False
+        guard.admit_scheduler_recovery_snapshot.return_value = None
+        guard.last_block_reason.return_value = 'recovery_cooldown'
+        guard.recovery_attempt_was_first.return_value = False
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup), \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertFalse(result)
+        self.assertEqual(0, fake_utils.notifications.count('string:30237'))
+
+    def test_recovered_operation_revoked_before_backup_stays_blocked(self):
+        """A live_update reason is still current (or a new severe reason
+        appeared) at the preplan recheck immediately before backup() -
+        must block there too, not just at the initial gate."""
+        backup = FakeBackup(pending=False, remote_configured=True)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        guard = mock.Mock()
+        guard.allow_operation.return_value = False
+        guard.admit_scheduler_recovery_snapshot.return_value = (
+            FakeOperationSettings())
+        guard.operation_revoked.return_value = True
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+        scheduler.settings_guard = guard
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup), \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertFalse(result)
+        self.assertFalse(any(
+            isinstance(event, tuple) and event[0] == 'backup'
+            for event in backup.events))
+        guard.operation_revoked.assert_called_once_with(
+            admitted_snapshot=True, recovered_from_live_update=True)
+
+    def test_ordinary_admission_failure_still_returns_false(self):
+        """doScheduledBackup() must still return a falsy result (not True)
+        when remoteConfigured() is False, so start() does not treat this
+        as an attempted run."""
+        backup = FakeBackup(pending=False, remote_configured=False)
+        fake_utils = FakeUtils(setting_ints={'progress_mode': 1})
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = True
+
+        with mock.patch.object(
+                scheduler_module, 'XbmcBackup', return_value=backup), \
+                mock.patch.object(
+                    scheduler_module.BackupOperationSettings, 'capture',
+                    return_value=FakeOperationSettings()), \
+                mock.patch.object(scheduler_module, 'utils', fake_utils):
+            result = scheduler.doScheduledBackup(1)
+
+        self.assertFalse(result)
+
+
+class SchedulerStartLoopTests(unittest.TestCase):
+    """start()'s live_update recovery gating - due status, cooldown, and
+    never advancing the schedule on a blocked/failed recovery attempt."""
+
+    def _scheduler(self, guard, iterations, next_run=0.0, enabled=True):
+        scheduler = object.__new__(scheduler_module.BackupScheduler)
+        scheduler.enabled = enabled
+        scheduler.settings_guard = guard
+        scheduler.next_run = next_run
+        scheduler.monitor = FakeMonitor(iterations)
+        return scheduler
+
+    def test_failed_recovery_does_not_advance_next_run(self):
+        guard = mock.Mock()
+        guard.poll.return_value = False
+        guard.unsafe_reason.return_value = 'live_update'
+        guard.scheduler_recovery_ready.return_value = True
+        scheduler = self._scheduler(guard, iterations=2)
+        scheduler.doScheduledBackup = mock.Mock(return_value=False)
+        scheduler.findNextRun = mock.Mock()
+
+        with mock.patch.object(
+                scheduler_module.time, 'time', return_value=100.0), \
+                mock.patch.object(scheduler_module.xbmc, 'sleep'), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingBool',
+                    return_value=False), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingInt',
+                    return_value=1):
+            scheduler.start()
+
+        self.assertTrue(scheduler.doScheduledBackup.called)
+        scheduler.findNextRun.assert_not_called()
+        self.assertEqual(0.0, scheduler.next_run)
+
+    def test_successful_recovery_advances_next_run_exactly_once(self):
+        guard = mock.Mock()
+        guard.poll.return_value = False
+        guard.unsafe_reason.return_value = 'live_update'
+        guard.scheduler_recovery_ready.return_value = True
+        scheduler = self._scheduler(guard, iterations=1)
+        scheduler.doScheduledBackup = mock.Mock(return_value=True)
+        scheduler.findNextRun = mock.Mock()
+
+        with mock.patch.object(
+                scheduler_module.time, 'time', return_value=100.0), \
+                mock.patch.object(scheduler_module.xbmc, 'sleep'), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingBool',
+                    return_value=False), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingInt',
+                    return_value=1):
+            scheduler.start()
+
+        scheduler.doScheduledBackup.assert_called_once()
+        scheduler.findNextRun.assert_called_once_with(100.0)
+
+    def test_cooldown_skips_doScheduledBackup_entirely(self):
+        guard = mock.Mock()
+        guard.poll.return_value = False
+        guard.unsafe_reason.return_value = 'live_update'
+        guard.scheduler_recovery_ready.return_value = False
+        scheduler = self._scheduler(guard, iterations=3)
+        scheduler.doScheduledBackup = mock.Mock()
+        scheduler.findNextRun = mock.Mock()
+
+        with mock.patch.object(scheduler_module.xbmc, 'sleep'):
+            scheduler.start()
+
+        scheduler.doScheduledBackup.assert_not_called()
+        scheduler.findNextRun.assert_not_called()
+
+    def test_other_unsafe_reason_disables_scheduler_as_before(self):
+        guard = mock.Mock()
+        guard.poll.return_value = False
+        guard.unsafe_reason.return_value = 'settings_view_changed'
+        scheduler = self._scheduler(guard, iterations=1, enabled=True)
+        scheduler.doScheduledBackup = mock.Mock()
+
+        with mock.patch.object(scheduler_module.xbmc, 'sleep'):
+            scheduler.start()
+
+        self.assertFalse(scheduler.enabled)
+        scheduler.doScheduledBackup.assert_not_called()
+
+    def test_non_tvos_guard_behavior_is_unchanged(self):
+        guard = mock.Mock()
+        guard.poll.return_value = True  # inactive guard always allows
+        scheduler = self._scheduler(guard, iterations=1)
+        scheduler.doScheduledBackup = mock.Mock(return_value=True)
+        scheduler.findNextRun = mock.Mock()
+
+        with mock.patch.object(
+                scheduler_module.time, 'time', return_value=100.0), \
+                mock.patch.object(scheduler_module.xbmc, 'sleep'), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingBool',
+                    return_value=False), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingInt',
+                    return_value=1):
+            scheduler.start()
+
+        guard.unsafe_reason.assert_not_called()
+        scheduler.doScheduledBackup.assert_called_once()
+        scheduler.findNextRun.assert_called_once_with(100.0)
+
+    def test_repeated_ticks_do_not_duplicate_a_successful_run(self):
+        guard = mock.Mock()
+        guard.poll.return_value = True
+        scheduler = self._scheduler(guard, iterations=3)
+        calls = []
+
+        def fake_do(progress_mode):
+            calls.append(progress_mode)
+            return True
+
+        def fake_find_next_run(now):
+            # Simulate the real advance-past-now behavior so a later tick
+            # correctly sees the schedule as no longer due.
+            scheduler.next_run = now + 3600
+
+        scheduler.doScheduledBackup = fake_do
+        scheduler.findNextRun = fake_find_next_run
+
+        with mock.patch.object(
+                scheduler_module.time, 'time', return_value=100.0), \
+                mock.patch.object(scheduler_module.xbmc, 'sleep'), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingBool',
+                    return_value=False), \
+                mock.patch.object(
+                    scheduler_module.utils, 'getSettingInt',
+                    return_value=1):
+            scheduler.start()
+
+        self.assertEqual(1, len(calls))
 
 
 class RefusingDialog:

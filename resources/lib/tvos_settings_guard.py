@@ -19,6 +19,11 @@ MARKER_SCHEMA = 1
 # suitable for the across-restart session marker.
 MARKER_NAME = 'settings-safety-session.xml'
 POLL_INTERVAL_SECONDS = 1.0
+# Minimum spacing between scheduler live-update recovery attempts. Bounds
+# doScheduledBackup() retries to once per this window instead of once per
+# scheduler tick (500ms), avoiding a retry storm while a due backup stays
+# blocked; see admit_scheduler_recovery_snapshot().
+RECOVERY_COOLDOWN_SECONDS = 30.0
 
 UNSAFE_PROPERTY = ADDON_ID + '.settings_unsafe'
 UNSAFE_REASON_PROPERTY = ADDON_ID + '.settings_unsafe_reason'
@@ -27,6 +32,14 @@ INVENTORY_SIGNATURE_PROPERTY = ADDON_ID + '.addon_inventory_signature'
 SETTINGS_EDIT_PROPERTY = ADDON_ID + '.settings_edit_active'
 SETTINGS_DIAGNOSTIC_PROPERTY = ADDON_ID + '.settings_diagnostic_state'
 SAFETY_READY_PROPERTY = ADDON_ID + '.settings_safety_ready'
+# Per-field trusted baseline for exactly the settings an unattended
+# scheduled backup's execution depends on - established before any live
+# update the same way SETTINGS_SIGNATURE_PROPERTY is, and never cleared by
+# a live_update transition (only by a genuine restart), so it remains
+# available as the pre-update trusted reference during scheduler recovery.
+CRITICAL_BASELINE_PROPERTY = ADDON_ID + '.settings_critical_baseline'
+SCHEDULER_RECOVERY_ATTEMPT_PROPERTY = (
+    ADDON_ID + '.scheduler_recovery_last_attempt')
 
 # Values included here are operational choices, never credentials or paths.
 _BOOL_SETTINGS = (
@@ -80,6 +93,27 @@ _SIMPLE_SELECTION_SETTINGS = (
     'backup_config',
     'backup_skin_config',
 )
+# Exactly the settings that determine what a scheduled backup does and how
+# it runs - reviewed and named explicitly per
+# docs/TVOS_LIVE_UPDATE_SCHEDULER_RECOVERY_REVIEW.md. A field not listed
+# here can never block or admit scheduler live-update recovery; a field
+# listed here can never be skipped. All members must already be present in
+# _BOOL_SETTINGS/_INT_SETTINGS above (checked as a module-load invariant).
+_CRITICAL_BOOL_SETTINGS = _SIMPLE_SELECTION_SETTINGS + (
+    'compress_backups',
+    'exclude_tmdbh_image_cache',
+    'enable_scheduler',
+    'schedule_miss',
+    'cron_shutdown',
+)
+_CRITICAL_INT_SETTINGS = (
+    'remote_selection',
+    'backup_selection_type',
+    'backup_rotation',
+    'schedule_interval',
+)
+assert set(_CRITICAL_BOOL_SETTINGS) <= set(_BOOL_SETTINGS)
+assert set(_CRITICAL_INT_SETTINGS) <= set(_INT_SETTINGS)
 
 
 class SettingsSafetyError(Exception):
@@ -92,21 +126,30 @@ def _digest(value):
     return hashlib.sha256(document.encode('utf-8')).hexdigest()
 
 
+def _captured_setting_values(addon):
+    """Read every tracked setting once from one fresh Addon wrapper.
+
+    Shared by normalized_settings_signature() (opaque whole-session digest)
+    and critical_scheduler_baseline() (named per-field digest for scheduler
+    live-update recovery) so both are always derived from the exact same
+    single-pass read, never two separate live reads that could disagree.
+    """
+    return (
+        {setting_id: bool(addon.getSettingBool(setting_id))
+         for setting_id in _BOOL_SETTINGS},
+        {setting_id: int(addon.getSettingInt(setting_id))
+         for setting_id in _INT_SETTINGS},
+        {setting_id: addon.getSetting(setting_id).strip()
+         for setting_id in _STRING_SETTINGS},
+        {setting_id: bool(addon.getSetting(setting_id).strip())
+         for setting_id in _PRESENCE_SETTINGS},
+    )
+
+
 def normalized_settings_signature(addon):
     """Return an opaque digest of non-sensitive Backup Pro settings."""
-    return normalized_settings_signature_from_values({
-        setting_id: bool(addon.getSettingBool(setting_id))
-        for setting_id in _BOOL_SETTINGS
-    }, {
-        setting_id: int(addon.getSettingInt(setting_id))
-        for setting_id in _INT_SETTINGS
-    }, {
-        setting_id: addon.getSetting(setting_id).strip()
-        for setting_id in _STRING_SETTINGS
-    }, {
-        setting_id: bool(addon.getSetting(setting_id).strip())
-        for setting_id in _PRESENCE_SETTINGS
-    })
+    return normalized_settings_signature_from_values(
+        *_captured_setting_values(addon))
 
 
 def normalized_settings_signature_from_values(bool_values, int_values,
@@ -123,6 +166,35 @@ def normalized_settings_signature_from_values(bool_values, int_values,
         values.append(('configured', setting_id,
                        bool(presence_values[setting_id])))
     return _digest(values)
+
+
+def critical_scheduler_baseline_from_values(bool_values, int_values,
+                                            string_values, presence_values):
+    """Per-field digest of exactly the settings a scheduled backup's
+    execution depends on: destination selection/presence, selected sets,
+    selection mode, compression, cache exclusion, rotation, scheduler
+    enablement and timing. Keyed by field name so a schema change to an
+    UNRELATED setting can never invalidate these, and so a critical field
+    this code no longer recognizes is simply absent (never silently
+    treated as matching). Free-form string values (e.g. backup_suffix,
+    the cron schedule fields) and private presence flags are digested,
+    never returned or stored in the clear - this must never be used to
+    recover a raw setting value, only to detect whether it changed.
+    """
+    baseline = {}
+    for setting_id in _CRITICAL_BOOL_SETTINGS:
+        baseline[setting_id] = _digest(
+            ('bool', setting_id, bool(bool_values[setting_id])))
+    for setting_id in _CRITICAL_INT_SETTINGS:
+        baseline[setting_id] = _digest(
+            ('int', setting_id, int(int_values[setting_id])))
+    for setting_id in _STRING_SETTINGS:
+        baseline[setting_id] = _digest(
+            ('string', setting_id, string_values[setting_id]))
+    for setting_id in _PRESENCE_SETTINGS:
+        baseline[setting_id] = _digest(
+            ('configured', setting_id, bool(presence_values[setting_id])))
+    return baseline
 
 
 def diagnostic_settings_state(addon):
@@ -278,6 +350,10 @@ class KodiSettingsSafetyHost:
         return (normalized_settings_signature(addon),
                 diagnostic_settings_state(addon))
 
+    def critical_scheduler_baseline(self):
+        return critical_scheduler_baseline_from_values(
+            *_captured_setting_values(self.addon()))
+
     def inventory_signature(self):
         request = {
             'jsonrpc': '2.0',
@@ -313,6 +389,7 @@ class TvOSSettingsGuard:
         self._last_comparison_performed = False
         self._last_changed_fields = []
         self._last_block_reason = None
+        self._last_recovery_first_attempt = False
 
     def is_unsafe(self):
         return (self._active
@@ -330,7 +407,8 @@ class TvOSSettingsGuard:
                 UNSAFE_PROPERTY, UNSAFE_REASON_PROPERTY,
                 SETTINGS_SIGNATURE_PROPERTY, INVENTORY_SIGNATURE_PROPERTY,
                 SETTINGS_EDIT_PROPERTY, SETTINGS_DIAGNOSTIC_PROPERTY,
-                SAFETY_READY_PROPERTY):
+                SAFETY_READY_PROPERTY, CRITICAL_BASELINE_PROPERTY,
+                SCHEDULER_RECOVERY_ATTEMPT_PROPERTY):
             self.host.property_clear(name)
 
     def _mark_ready(self):
@@ -424,13 +502,42 @@ class TvOSSettingsGuard:
             self.host.property_set(
                 INVENTORY_SIGNATURE_PROPERTY,
                 self.host.inventory_signature())
+        if not self.host.property_get(CRITICAL_BASELINE_PROPERTY):
+            baseline = self._critical_scheduler_baseline_observation()
+            if baseline is not None:
+                self._set_critical_baseline(baseline)
         return True
+
+    def _set_critical_baseline(self, baseline):
+        self.host.property_set(
+            CRITICAL_BASELINE_PROPERTY,
+            json.dumps(baseline, sort_keys=True, separators=(',', ':')))
+
+    def _critical_baseline(self):
+        try:
+            return dict(json.loads(
+                self.host.property_get(CRITICAL_BASELINE_PROPERTY)))
+        except (TypeError, ValueError):
+            return {}
 
     def _settings_observation(self):
         observe = getattr(self.host, 'settings_observation', None)
         if observe is not None:
             return observe()
         return self.host.settings_signature(), None
+
+    def _critical_scheduler_baseline_observation(self):
+        """None when the host doesn't support this (e.g. an older test
+        double) - the caller then simply does not establish a critical
+        baseline this pass, which correctly leaves scheduler recovery
+        failing closed (no trusted baseline to validate against) rather
+        than raising. Mirrors _settings_observation()'s existing
+        getattr-based graceful degradation.
+        """
+        capture = getattr(self.host, 'critical_scheduler_baseline', None)
+        if capture is None:
+            return None
+        return capture()
 
     def _set_diagnostic_baseline(self, diagnostic):
         if diagnostic is not None:
@@ -591,7 +698,8 @@ class TvOSSettingsGuard:
         self._log_operation_decision(action, allowed, unsafe_before)
         return allowed
 
-    def operation_revoked(self, admitted_snapshot=False):
+    def operation_revoked(self, admitted_snapshot=False,
+                          recovered_from_live_update=False):
         """Read shared state without ever refreshing operation settings.
 
         An admitted backup snapshot is complete and immutable.  A later
@@ -599,6 +707,15 @@ class TvOSSettingsGuard:
         for future operations, but cannot change that already-admitted plan.
         Other unsafe reasons remain revocations because they indicate a
         lifecycle or safety condition the snapshot does not make safe.
+
+        `recovered_from_live_update` is set only for a scheduled backup
+        admitted through admit_scheduler_recovery_snapshot(): that snapshot
+        was validated specifically against a sticky `live_update` reason,
+        so that SAME reason persisting must not revoke it either - exactly
+        the same tolerance `admitted_snapshot`/`settings_view_changed`
+        already has, extended to the one other reason this snapshot was
+        already proven safe against. Any OTHER reason appearing (e.g. a
+        fresh settings_view_changed observed mid-run) still revokes.
         """
         if not self._active:
             return False
@@ -606,10 +723,12 @@ class TvOSSettingsGuard:
             return True
         if not self.is_unsafe():
             return False
-        return not (
-            admitted_snapshot
-            and self.host.property_get(UNSAFE_REASON_PROPERTY)
-            == 'settings_view_changed')
+        reason = self.host.property_get(UNSAFE_REASON_PROPERTY)
+        if admitted_snapshot and reason == 'settings_view_changed':
+            return False
+        if recovered_from_live_update and reason == 'live_update':
+            return False
+        return True
 
     def admit_backup_snapshot(self, capture):
         """Admit one complete immutable backup configuration or return None.
@@ -643,6 +762,146 @@ class TvOSSettingsGuard:
             return None
         return first
 
+    def _last_recovery_attempt(self):
+        raw = self.host.property_get(SCHEDULER_RECOVERY_ATTEMPT_PROPERTY)
+        try:
+            return float(raw) if raw else None
+        except (TypeError, ValueError):
+            return None
+
+    def _set_last_recovery_attempt(self, when):
+        self.host.property_set(
+            SCHEDULER_RECOVERY_ATTEMPT_PROPERTY, repr(when))
+
+    def scheduler_recovery_ready(self):
+        """True if a scheduler recovery attempt is not currently throttled
+        by RECOVERY_COOLDOWN_SECONDS. Read-only; does not itself count as
+        an attempt. Lets a caller (the scheduler loop) avoid invoking
+        allow_operation()/admit_scheduler_recovery_snapshot() - and their
+        own logging - on every poll tick while a recovery attempt is
+        still cooling down.
+        """
+        last_attempt = self._last_recovery_attempt()
+        if last_attempt is None:
+            return True
+        return (self.host.monotonic() - last_attempt
+               >= RECOVERY_COOLDOWN_SECONDS)
+
+    def recovery_attempt_was_first(self):
+        """True if the most recent admit_scheduler_recovery_snapshot() call
+        performed the first real recovery attempt since this unsafe episode
+        began (as opposed to a cooldown-throttled no-op). Used to show a
+        user-facing notification at most once per episode, not on every
+        retry.
+        """
+        return self._last_recovery_first_attempt
+
+    def admit_scheduler_recovery_snapshot(self, capture):
+        """Admit exactly one scheduled-backup snapshot after a live update.
+
+        Eligible ONLY when the sticky unsafe reason is precisely
+        'live_update' - not bootstrap, invalid, initialization_failed,
+        safety_check_failed, snapshot_capture_failed,
+        settings_rebaseline_failed, or any other reason - and not while
+        the service is still advertising SAFETY_READY_PROPERTY as
+        'initializing'. Every other unsafe reason continues to block with
+        no recovery, exactly as before this method existed.
+
+        Admission requires, in order: (1) two independently fresh, complete
+        captures via `capture` that compare exactly equal to each other
+        (consistency); (2) a structurally valid destination for the
+        selected slot (see BackupOperationSettings.destination_state_valid);
+        (3) the capture's critical, execution-affecting, non-sensitive
+        fields matching the TRUSTED PRE-UPDATE baseline
+        (CRITICAL_BASELINE_PROPERTY, established before the update and
+        never touched by a live_update transition) field-by-field
+        (correctness - two matching captures alone only prove Kodi's
+        current view is internally stable, not that it is the real,
+        current, non-default view). A critical field this baseline cannot
+        validate (e.g. one newly introduced by the very update that
+        triggered this recovery) fails closed rather than being skipped.
+
+        Never clears UNSAFE_PROPERTY/SAFETY_READY_PROPERTY/
+        SETTINGS_SIGNATURE_PROPERTY - interactive (Program) access remains
+        restart-required regardless of the outcome here. Depends only on
+        Window properties and fresh live reads, never on any object
+        retained in this process's memory from before the update, so it
+        does not depend on whether the running service interpreter kept
+        executing old bytecode across the update or was itself restarted
+        in place.
+
+        self._last_block_reason is set to the specific reason on every
+        failure, for logging only. self._last_recovery_first_attempt
+        records whether this call actually attempted validation (True) or
+        was skipped due to the retry cooldown (False) - even a "first
+        attempt" may still fail every check below and return None.
+        """
+        self._last_block_reason = None
+        self._last_recovery_first_attempt = False
+        if not self._active:
+            return None
+        if self.host.property_get(SAFETY_READY_PROPERTY) == 'initializing':
+            self._last_block_reason = 'service_initializing'
+            return None
+        if not self.is_unsafe():
+            self._last_block_reason = 'not_unsafe'
+            return None
+        if self.host.property_get(UNSAFE_REASON_PROPERTY) != 'live_update':
+            self._last_block_reason = 'unsafe_reason_not_recoverable'
+            return None
+
+        last_attempt = self._last_recovery_attempt()
+        self._last_recovery_first_attempt = last_attempt is None
+        now = self.host.monotonic()
+        if (last_attempt is not None
+                and now - last_attempt < RECOVERY_COOLDOWN_SECONDS):
+            self._last_block_reason = 'recovery_cooldown'
+            return None
+        self._set_last_recovery_attempt(now)
+
+        try:
+            first = capture()
+            second = capture()
+        except Exception as exc:
+            self.host.log('scheduler recovery capture failed: %s' %
+                          type(exc).__name__)
+            self._last_block_reason = 'recovery_capture_failed'
+            return None
+        if first != second:
+            self.host.log('scheduler recovery capture was inconsistent')
+            self._last_block_reason = 'recovery_capture_inconsistent'
+            return None
+        if not first.destination_state_valid():
+            self.host.log('scheduler recovery destination state invalid')
+            self._last_block_reason = 'recovery_destination_invalid'
+            return None
+
+        baseline = self._critical_baseline()
+        if not baseline:
+            self.host.log('scheduler recovery has no trusted baseline')
+            self._last_block_reason = 'recovery_no_trusted_baseline'
+            return None
+        fresh = first.critical_scheduler_baseline()
+        unvalidated = sorted(
+            name for name in fresh if name not in baseline)
+        if unvalidated:
+            self.host.log('scheduler recovery cannot validate: ' +
+                          ','.join(unvalidated))
+            self._last_block_reason = 'recovery_field_unvalidated'
+            return None
+        mismatched = sorted(
+            name for name in fresh if fresh[name] != baseline[name])
+        if mismatched:
+            self.host.log('scheduler recovery baseline mismatch: ' +
+                          ','.join(mismatched))
+            self._last_block_reason = 'recovery_baseline_mismatch'
+            return None
+
+        self.host.log(
+            'scheduler recovery admitted a scheduled backup after a live '
+            'update; interactive access remains restart-required')
+        return first
+
     def begin_settings_edit(self):
         if self._active:
             self.host.property_set(SETTINGS_EDIT_PROPERTY, '1')
@@ -662,9 +921,31 @@ class TvOSSettingsGuard:
             signature, diagnostic = self._settings_observation()
             self.host.property_set(SETTINGS_SIGNATURE_PROPERTY, signature)
             self._set_diagnostic_baseline(diagnostic)
+            baseline = self._critical_scheduler_baseline_observation()
+            if baseline is not None:
+                self._set_critical_baseline(baseline)
             return True
         except Exception as exc:
             self.host.log(
                 'settings rebaseline failed: %s: %s' % (
                     type(exc).__name__, exc))
             return self._mark_unsafe('settings_rebaseline_failed')
+
+    def unsafe_reason(self):
+        """The current sticky unsafe reason, or None if safe/inactive.
+
+        Read-only; lets a caller decide whether a reason-specific recovery
+        path (e.g. scheduler live-update recovery) applies before doing any
+        real work.
+        """
+        if not self._active or not self.is_unsafe():
+            return None
+        return self.host.property_get(UNSAFE_REASON_PROPERTY) or None
+
+    def last_block_reason(self):
+        """The specific reason the most recent allow_operation()/
+        admit_backup_snapshot()/admit_scheduler_recovery_snapshot() call
+        was blocked, or None. For logging/notification only - never used
+        to make a safety decision itself.
+        """
+        return self._last_block_reason

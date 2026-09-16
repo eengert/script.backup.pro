@@ -111,12 +111,20 @@ class XbmcBackup:
     restore_point = None
     skip_advanced = False   # if we should check for the existance of advancedsettings in the restore
 
-    def __init__(self, settings_guard=None, operation_settings=None):
+    def __init__(self, settings_guard=None, operation_settings=None,
+                 recovered_from_live_update=False):
         # Program and scheduler pass their shared tvOS guard here. It remains
         # optional so restore/status and non-tvOS callers retain their current
         # behavior.
         self.settings_guard = settings_guard
         self.operation_settings = operation_settings
+        # True only for a scheduled backup admitted through
+        # TvOSSettingsGuard.admit_scheduler_recovery_snapshot(). That
+        # snapshot was already validated against a sticky 'live_update'
+        # reason, so operation_revoked() must not treat that SAME reason
+        # persisting as a revocation of this already-admitted operation -
+        # see operation_revoked()'s docstring.
+        self._recovered_from_live_update = bool(recovered_from_live_update)
         self.xbmc_vfs = XBMCFileSystem(xbmcvfs.translatePath('special://home'))
         self.ZIP_TEMP_PATH = xbmcvfs.translatePath(self._setting('zip_temp_path'))
         self.transferSize = 0
@@ -1384,7 +1392,10 @@ class XbmcBackup:
         if guard is None:
             return True
         if getattr(self, 'operation_settings', None) is not None:
-            if not guard.operation_revoked(admitted_snapshot=True):
+            if not guard.operation_revoked(
+                    admitted_snapshot=True,
+                    recovered_from_live_update=getattr(
+                        self, '_recovered_from_live_update', False)):
                 return True
             utils.log('backup selection blocked: Kodi restart required',
                       xbmc.LOGWARNING)
@@ -1882,7 +1893,10 @@ class XbmcBackup:
         guard = getattr(self, 'settings_guard', None)
         return (getattr(self, 'operation_settings', None) is not None
                 and guard is not None
-                and guard.operation_revoked(admitted_snapshot=True))
+                and guard.operation_revoked(
+                    admitted_snapshot=True,
+                    recovered_from_live_update=getattr(
+                        self, '_recovered_from_live_update', False)))
 
     def _hashFile(self, path, cancellable=False):
         with xbmcvfs.File(xbmcvfs.translatePath(path), 'r') as source:

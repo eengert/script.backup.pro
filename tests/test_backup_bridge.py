@@ -607,8 +607,10 @@ class BackupBridgeTests(unittest.TestCase):
 
     def test_admitted_snapshot_ignores_later_stale_settings_revocation(self):
         class Guard:
-            def operation_revoked(self, admitted_snapshot=False):
+            def operation_revoked(self, admitted_snapshot=False,
+                                  recovered_from_live_update=False):
                 self.admitted_snapshot = admitted_snapshot
+                self.recovered_from_live_update = recovered_from_live_update
                 return False
 
         instance = object.__new__(XbmcBackup)
@@ -617,6 +619,7 @@ class BackupBridgeTests(unittest.TestCase):
 
         self.assertFalse(instance._operation_revoked())
         self.assertTrue(instance.settings_guard.admitted_snapshot)
+        self.assertFalse(instance.settings_guard.recovered_from_live_update)
 
     def test_admitted_snapshot_selection_boundary_allows_stale_settings_only(self):
         class Guard:
@@ -624,7 +627,8 @@ class BackupBridgeTests(unittest.TestCase):
                 self.revoked = revoked
                 self.admitted_snapshot = None
 
-            def operation_revoked(self, admitted_snapshot=False):
+            def operation_revoked(self, admitted_snapshot=False,
+                                  recovered_from_live_update=False):
                 self.admitted_snapshot = admitted_snapshot
                 return self.revoked
 
