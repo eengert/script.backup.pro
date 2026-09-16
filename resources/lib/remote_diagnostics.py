@@ -176,6 +176,12 @@ def redact_uri(raw_value):
         port = None
     netloc = host if port is None else '%s:%s' % (host, port)
     try:
-        return parts._replace(netloc=netloc).geturl()
+        # Once we know we're redacting, also drop query/fragment - no
+        # destination Backup Pro actually supports puts a secret there
+        # today, but a value already carrying embedded credentials is
+        # exactly the case where an unknown provider might, and there is
+        # no display-string reason to keep them once the value is being
+        # rewritten anyway.
+        return parts._replace(netloc=netloc, query='', fragment='').geturl()
     except ValueError:
         return raw_value

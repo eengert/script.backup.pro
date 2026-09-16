@@ -164,6 +164,26 @@ class RedactUriTests(unittest.TestCase):
         redacted = redact_uri(SMB_WITH_CREDENTIALS)
         self.assertIn(':445', redacted)
 
+    def test_strips_query_and_fragment_alongside_credentials(self):
+        # No destination Backup Pro currently supports puts a secret in a
+        # query string or fragment, but a value that already carries
+        # embedded credentials is exactly the case where an unknown
+        # provider might - drop both defensively once we know we're
+        # already rewriting the value.
+        redacted = redact_uri(
+            'smb://user:pass@192.0.2.10/share/?token=SECRETTOKEN#frag')
+        self.assertNotIn('SECRETTOKEN', redacted)
+        self.assertNotIn('frag', redacted)
+        self.assertNotIn('user', redacted)
+        self.assertNotIn('pass', redacted)
+        self.assertEqual('smb://192.0.2.10/share/', redacted)
+
+    def test_preserves_query_when_no_credentials_present(self):
+        # Only rewrite the value when there is actually something to
+        # redact - a credential-free query string is left exactly alone.
+        unchanged = 'smb://192.0.2.10/share/?token=NOT_A_SECRET'
+        self.assertEqual(unchanged, redact_uri(unchanged))
+
 
 if __name__ == '__main__':
     unittest.main()
