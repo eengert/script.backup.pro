@@ -2168,6 +2168,191 @@ class ArchiveDiscoveryTests(unittest.TestCase):
         self.assertEqual(['202609160835.zip'], [entry[0] for entry in result])
 
 
+SMB_WITH_CREDENTIALS = (
+    'smb://exampleuser:example-password@192.0.2.10:445/AppleTv/backups/'
+    'ExampleRoom - Main/')
+
+
+class RemoteDestinationDiagnosticsTests(unittest.TestCase):
+    """Exercises the SMB diagnostic hardening added for the intermittent
+    Apple TV destination failure: sanitized destination logging at the
+    admitted-snapshot boundary and at the actual remote-directory-prepare
+    failure boundary, and that neither ever leaks a credential."""
+
+    def _fakeOperationSettings(self, **overrides):
+        values = {
+            'remote_selection': 0,
+            'remote_path': SMB_WITH_CREDENTIALS,
+            'remote_path_2': '',
+            'dropbox_key': '',
+            'dropbox_secret': '',
+        }
+        values.update(overrides)
+        return type('FakeOperationSettings', (), values)()
+
+    def test_snapshot_diagnostics_use_the_admitted_snapshot_not_live_settings(self):
+        # The admitted snapshot says one destination; live settings (as
+        # they would read if re-fetched mid-operation) say another. The
+        # diagnostic must reflect only the snapshot, proving no live
+        # settings read leaked into destination diagnostics after
+        # admission.
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = self._fakeOperationSettings(
+            remote_path='smb://192.0.2.10/AppleTv/backups/ExampleRoom - Main/')
+        original_get_setting = backup_module.utils.getSetting
+        try:
+            backup_module.utils.getSetting = lambda _name: (
+                'smb://live-settings-should-not-be-used@10.0.0.9/other/')
+            result = instance._destinationDiagnostics()
+        finally:
+            backup_module.utils.getSetting = original_get_setting
+
+        self.assertEqual('192.0.2.10', result['host'])
+        self.assertEqual('primary_path', result['slot'])
+        self.assertFalse(result['credentials_present'])
+
+    def test_no_operation_settings_falls_back_to_live_settings(self):
+        # Restore/status construct XbmcBackup without an admitted
+        # snapshot; _setting() (and therefore diagnostics) legitimately
+        # fall back to live settings in that case.
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = None
+        original_get_setting = backup_module.utils.getSetting
+        try:
+            backup_module.utils.getSetting = lambda name: {
+                'remote_selection': '0',
+                'remote_path': 'smb://192.0.2.10/live-path/',
+            }.get(name, '')
+            result = instance._destinationDiagnostics()
+        finally:
+            backup_module.utils.getSetting = original_get_setting
+
+        self.assertEqual('192.0.2.10', result['host'])
+
+    def test_current_destination_diagnostics_reflects_the_live_remote_vfs(self):
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = None
+        instance.remote_vfs = type('Remote', (), {
+            'root_path': SMB_WITH_CREDENTIALS,
+        })()
+        result = instance._currentDestinationDiagnostics()
+
+        self.assertEqual('192.0.2.10', result['host'])
+        self.assertTrue(result['credentials_present'])
+
+    def test_current_destination_diagnostics_explicit_path_overrides_root(self):
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = None
+        instance.remote_vfs = type('Remote', (), {
+            'root_path': 'smb://192.0.2.10/AppleTv/backups/ExampleRoom - Main/',
+        })()
+        result = instance._currentDestinationDiagnostics(
+            SMB_WITH_CREDENTIALS + '20260910174920.zip')
+
+        self.assertTrue(result['credentials_present'])
+        self.assertEqual('/AppleTv/backups/ExampleRoom - Main/'
+                          '20260910174920.zip', result['path'])
+
+    def _mkdirFailureInstance(self, remote_root):
+        instance = object.__new__(XbmcBackup)
+        instance.operation_settings = None
+        instance._setupVFS = lambda *_a, **_k: True
+        instance.remote_vfs = type('Remote', (), {
+            'root_path': remote_root,
+            'exists': lambda _self, _path: False,
+            'mkdir': lambda _self, _path: False,
+        })()
+        instance._copy_failures = []
+        instance._failure_reason = None
+        instance._vfs_closed = False
+        instance._closeVFS = lambda: setattr(instance, '_vfs_closed', True)
+        instance.progressBar = type('Progress', (), {
+            'close': lambda self: None})()
+        return instance
+
+    def test_directory_prepare_failure_reports_the_correct_stage(self):
+        instance = self._mkdirFailureInstance(SMB_WITH_CREDENTIALS)
+        logged = []
+        dialog = FakeRecoveryDialog()
+        original_log = backup_module.utils.log
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        try:
+            backup_module.utils.log = lambda message, *_a: logged.append(
+                message)
+            backup_module.xbmcgui.Dialog = lambda: dialog
+            result = instance._runBackup()
+        finally:
+            backup_module.utils.log = original_log
+            if original_dialog is None:
+                if hasattr(backup_module.xbmcgui, 'Dialog'):
+                    delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+
+        self.assertFalse(result)
+
+        stage_records = [m for m in logged if '"stage":' in m]
+        self.assertTrue(any(
+            '"directory_prepare_failed"' in m for m in stage_records))
+        # The stage that only announces intent (not yet failed) must also
+        # have fired, so a hang between the two is distinguishable from
+        # an immediate failure.
+        self.assertTrue(any(
+            '"directory_prepare"' in m and 'failed' not in m
+            for m in stage_records))
+
+    def test_no_credentials_appear_anywhere_in_captured_log_output(self):
+        instance = self._mkdirFailureInstance(SMB_WITH_CREDENTIALS)
+        logged = []
+        dialog = FakeRecoveryDialog()
+        original_log = backup_module.utils.log
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        try:
+            backup_module.utils.log = lambda message, *_a: logged.append(
+                message)
+            backup_module.xbmcgui.Dialog = lambda: dialog
+            instance._runBackup()
+        finally:
+            backup_module.utils.log = original_log
+            if original_dialog is None:
+                if hasattr(backup_module.xbmcgui, 'Dialog'):
+                    delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+
+        combined = '\n'.join(logged)
+        self.assertNotIn('exampleuser', combined)
+        self.assertNotIn('example-password', combined)
+        # Also never shown to the user via the failure dialog's reason text.
+        dialog_text = '\n'.join(
+            str(call[2]) for call in dialog.calls if call[0] == 'ok')
+        self.assertNotIn('exampleuser', dialog_text)
+        self.assertNotIn('example-password', dialog_text)
+
+    def test_mkdir_still_receives_the_real_unredacted_destination(self):
+        # Sanitization must be log-only: production SMB behavior (the
+        # actual path Kodi's VFS is asked to create) is unchanged.
+        instance = self._mkdirFailureInstance(SMB_WITH_CREDENTIALS)
+        received_paths = []
+        instance.remote_vfs.mkdir = lambda path: received_paths.append(
+            path) or False
+        original_log = backup_module.utils.log
+        original_dialog = getattr(backup_module.xbmcgui, 'Dialog', None)
+        try:
+            backup_module.utils.log = lambda *_a: None
+            backup_module.xbmcgui.Dialog = lambda: FakeRecoveryDialog()
+            instance._runBackup()
+        finally:
+            backup_module.utils.log = original_log
+            if original_dialog is None:
+                if hasattr(backup_module.xbmcgui, 'Dialog'):
+                    delattr(backup_module.xbmcgui, 'Dialog')
+            else:
+                backup_module.xbmcgui.Dialog = original_dialog
+
+        self.assertEqual([SMB_WITH_CREDENTIALS], received_paths)
+
+
 class RemoteConfiguredTests(unittest.TestCase):
     """remoteConfigured() gates both manual Backup and Restore in
     default.py; it must detect an empty destination setting even though

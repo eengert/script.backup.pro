@@ -62,6 +62,12 @@ from resources.lib.skin_restore import (
     load_skin_snapshot,
     skin_restore_preview,
 )
+from resources.lib.remote_diagnostics import (
+    describe_remote_destination,
+    redact_uri,
+    sanitize_dropbox_destination,
+    sanitize_path_destination,
+)
 
 
 def folderSort(aKey):
@@ -130,7 +136,42 @@ class XbmcBackup:
         self._failure_reason = None
 
         self.configureRemote()
+        if self.operation_settings is not None:
+            # Sourced entirely from the admitted immutable snapshot via
+            # self._setting() below - never a fresh live settings read -
+            # so this can be compared directly against what the same
+            # snapshot's later stages actually used.
+            utils.log('Backup destination (admitted snapshot): %s'
+                      % json.dumps(self._destinationDiagnostics(),
+                                   sort_keys=True))
         utils.log(utils.getString(30046))
+
+    def _destinationDiagnostics(self):
+        """Sanitized, credential-free structural diagnostic for whichever
+        destination slot is currently selected, sourced through
+        self._setting() - the admitted operation snapshot when one is
+        present, live settings otherwise. Never returns a raw setting
+        value; see resources/lib/remote_diagnostics.py."""
+        return describe_remote_destination(
+            int(self._setting('remote_selection')),
+            self._setting('remote_path'),
+            self._setting('remote_path_2'),
+            self._setting('dropbox_key'),
+            self._setting('dropbox_secret'))
+
+    def _currentDestinationDiagnostics(self, explicit_path=None):
+        """Sanitized diagnostic for self.remote_vfs's CURRENT state (or
+        `explicit_path`, e.g. one specific remote filename) - what has
+        actually been handed to a Kodi VFS call at this exact point,
+        as opposed to _destinationDiagnostics()'s admitted-snapshot
+        setting value. The two should always agree; if they don't, that
+        itself is diagnostic."""
+        if isinstance(self.remote_vfs, DropboxFileSystem):
+            return sanitize_dropbox_destination(
+                self._setting('dropbox_key'), self._setting('dropbox_secret'))
+        path = (explicit_path if explicit_path is not None
+                else self.remote_vfs.root_path)
+        return sanitize_path_destination(path)
 
     def configureRemote(self):
         # the raw, unnormalized setting value backing the current
@@ -230,18 +271,29 @@ class XbmcBackup:
             if not isinstance(self.remote_vfs, ZipFileSystem):
                 if self.remote_vfs.exists(self.remote_vfs.root_path):
                     utils.log('Backup target already exists: ' +
-                              self.remote_vfs.root_path, xbmc.LOGWARNING)
+                              redact_uri(self.remote_vfs.root_path),
+                              xbmc.LOGWARNING)
                     self._reportBackupFailure(
                         'the backup destination already exists: '
-                        + self.remote_vfs.root_path)
+                        + redact_uri(self.remote_vfs.root_path))
                     self._closeVFS()
                     return False
+                utils.log('Preparing remote destination directory: %s'
+                          % json.dumps(dict(
+                              self._currentDestinationDiagnostics(),
+                              stage='directory_prepare'), sort_keys=True))
                 if not self.remote_vfs.mkdir(self.remote_vfs.root_path):
                     utils.log('Unable to create backup target: ' +
-                              self.remote_vfs.root_path, xbmc.LOGWARNING)
+                              redact_uri(self.remote_vfs.root_path),
+                              xbmc.LOGWARNING)
+                    utils.log('Remote directory creation failed: %s'
+                              % json.dumps(dict(
+                                  self._currentDestinationDiagnostics(),
+                                  stage='directory_prepare_failed'),
+                                  sort_keys=True), xbmc.LOGWARNING)
                     self._reportBackupFailure(
                         'could not create the backup destination: '
-                        + self.remote_vfs.root_path)
+                        + redact_uri(self.remote_vfs.root_path))
                     self._closeVFS()
                     return False
                 self._active_artifact = self.remote_vfs.root_path
@@ -296,10 +348,29 @@ class XbmcBackup:
                     break
                 self.xbmc_vfs.set_root(xbmcvfs.translatePath(fileGroup['source']))
                 self.remote_vfs.set_root(fileGroup['dest'] + fileGroup['name'])
+                if not compressing:
+                    # Uncompressed backups write each set directly to the
+                    # real remote destination here; compressed backups
+                    # reuse this same loop to build the local ZIP instead
+                    # (self.remote_vfs is a local ZipFileSystem at this
+                    # point) - only log the real-destination case.
+                    utils.log('Remote write starting: %s' % json.dumps(
+                        dict(self._currentDestinationDiagnostics(),
+                             stage='folder_remote_write',
+                             set_name=fileGroup['name']), sort_keys=True))
                 filesCopied = self._copyFiles(fileGroup['files'], self.xbmc_vfs, self.remote_vfs)
 
                 if(not filesCopied):
                     backup_success = False
+                    if not compressing:
+                        utils.log('Remote write failed: %s' % json.dumps(
+                            dict(self._currentDestinationDiagnostics(),
+                                 stage='folder_remote_write_failed',
+                                 set_name=fileGroup['name'],
+                                 failed_file_count=len(
+                                     getattr(self, '_copy_failures', None)
+                                     or [])),
+                                sort_keys=True), xbmc.LOGWARNING)
                     if self._operation_revoked():
                         safety_cancelled = True
                         break
@@ -370,8 +441,8 @@ class XbmcBackup:
                     remote_zip = (self.remote_vfs.root_path +
                                   os.path.basename(zip_name))
                     if self.remote_vfs.exists(remote_zip):
-                        utils.log('Backup ZIP already exists: ' + remote_zip,
-                                  xbmc.LOGWARNING)
+                        utils.log('Backup ZIP already exists: '
+                                  + redact_uri(remote_zip), xbmc.LOGWARNING)
                         backup_success = False
                     else:
                         remote_artifact = remote_zip
@@ -380,10 +451,24 @@ class XbmcBackup:
                 if backup_success and not self._operation_revoked():
                     self.transferSize = fileManager.fileSize()
                     self.transferLeft = self.transferSize
+                    utils.log('Remote upload starting: %s' % json.dumps(
+                        dict(self._currentDestinationDiagnostics(remote_zip),
+                             stage='compressed_remote_upload',
+                             archive_kib=self.transferSize),
+                        sort_keys=True))
                     fileCopied = self._copyFiles(
                         fileManager.getFiles(), self.xbmc_vfs,
                         self.remote_vfs, progress_message=compressing_message)
                     backup_success = bool(fileCopied)
+                    if not backup_success:
+                        utils.log('Remote upload failed: %s' % json.dumps(
+                            dict(self._currentDestinationDiagnostics(
+                                     remote_zip),
+                                 stage='compressed_remote_upload_failed',
+                                 failed_file_count=len(
+                                     getattr(self, '_copy_failures', None)
+                                     or [])),
+                                sort_keys=True), xbmc.LOGWARNING)
                 if backup_success:
                     try:
                         self._verifyCompressedUpload(zip_name, remote_zip)
@@ -487,7 +572,9 @@ class XbmcBackup:
 
             # for restores remote path must exist
             if(not self.remote_vfs.exists(self.remote_vfs.root_path)):
-                xbmcgui.Dialog().ok(utils.getString(30010), '%s\n%s' % (utils.getString(30045), self.remote_vfs.root_path))
+                xbmcgui.Dialog().ok(utils.getString(30010), '%s\n%s' % (
+                    utils.getString(30045),
+                    redact_uri(self.remote_vfs.root_path)))
                 return
 
             valFile = self._checkValidationFile(self.remote_vfs.root_path)
@@ -579,8 +666,11 @@ class XbmcBackup:
 
                         allFiles.append({"source": self.remote_vfs.root_path + aDir['name'], "dest": self.xbmc_vfs.root_path, "files": fileManager.getFiles()})
                     else:
-                        utils.log("error path not found: " + self.remote_vfs.root_path + aDir['name'])
-                        xbmcgui.Dialog().ok(utils.getString(30010), '%s\n%s' % (utils.getString(30045), self.remote_vfs.root_path + aDir['name']))
+                        utils.log("error path not found: " + redact_uri(
+                            self.remote_vfs.root_path + aDir['name']))
+                        xbmcgui.Dialog().ok(utils.getString(30010), '%s\n%s' % (
+                            utils.getString(30045), redact_uri(
+                                self.remote_vfs.root_path + aDir['name'])))
 
                 # restore all the files
                 self.transferLeft = self.transferSize
@@ -1044,7 +1134,8 @@ class XbmcBackup:
             return False
 
         utils.log(utils.getString(30047) + ": " + self.xbmc_vfs.root_path)
-        utils.log(utils.getString(30048) + ": " + self.remote_vfs.root_path)
+        utils.log(utils.getString(30048) + ": "
+                  + redact_uri(self.remote_vfs.root_path))
         utils.log(utils.getString(30152) + ": " + self._setting('zip_temp_path'))
 
         # setup the progress bar
@@ -1091,8 +1182,8 @@ class XbmcBackup:
                    incremental_copy=None):
         result = True
 
-        utils.log("Source: " + source.root_path)
-        utils.log("Destination: " + dest.root_path)
+        utils.log("Source: " + redact_uri(source.root_path))
+        utils.log("Destination: " + redact_uri(dest.root_path))
 
         # make sure the dest folder exists - can cause write errors if the full path doesn't exist
         if(not dest.exists(dest.root_path)):
@@ -1497,6 +1588,16 @@ class XbmcBackup:
         return True
 
     def _finalizeBackup(self, success, artifact_path, compressed):
+        # A single stage-complete/stage-failed marker sufficient to
+        # compare a failed run against a successful one at the same
+        # destination, without needing to correlate several earlier log
+        # lines by hand.
+        utils.log('Backup destination stage %s: %s' % (
+            'complete' if success else 'failed',
+            json.dumps(dict(
+                self._currentDestinationDiagnostics(artifact_path),
+                stage='finalize'), sort_keys=True)),
+            xbmc.LOGDEBUG if success else xbmc.LOGWARNING)
         if success:
             self._active_artifact = None
             if self._rotateBackups() is False:
