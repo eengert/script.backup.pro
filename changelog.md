@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Version 0.9.36
+
+### Added
+
+- On Apple TV/tvOS, a due scheduled backup can now safely recover after a
+  silent Backup Pro update, when a fresh settings view is independently
+  validated against trusted pre-update state.
+
+### Notes
+
+- Interactive Backup Pro operations (Program, manual Backup, Restore)
+  still require a Kodi restart after a live update.
+- A failed recovery attempt leaves the scheduled backup pending for a
+  later eligible attempt.
+- No credentials or private destination values are persisted by the
+  recovery mechanism.
+
 ## Version 0.9.35
 
 ### Added
